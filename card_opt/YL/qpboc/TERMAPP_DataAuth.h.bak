@@ -1,0 +1,15 @@
+#ifndef __TERMAPP_DATAAUTH_H__
+#define __TERMAPP_DATAAUTH_H__
+
+typedef struct {
+	uchar RID[5];
+	uchar CAPKI;
+	unsigned int Exponent;
+	uchar ModulLen;
+	//unsigned int ModulLen;
+	uchar *pModul;
+}CAPK_STRUCT2;
+
+extern CAPK_STRUCT2 CAPK_list[];
+
+#endif //#ifndef __TERMAPP_DATAAUTH_H__

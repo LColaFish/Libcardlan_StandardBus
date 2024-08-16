@@ -1,0 +1,282 @@
+#include "Includes.h"
+#include "unistd.h"
+//#include "../rc500/rc500.h"
+
+uchar SRCPUCardBuf[256];
+uchar SRCPUCardCount;
+
+void delay_1ms()
+{
+	usleep(1000);
+}
+
+void menu_print(char *buffer, int length)
+{
+	int i;
+	
+	for (i = 0; i < length; i++)
+	{
+		DBG_DATA_PRINTF("%02X ", *(buffer + i));
+		if ((i + 1) % 8 == 0) DBG_DATA_PRINTF(" ");
+		if ((i + 1) % 16 == 0) DBG_DATA_PRINTF("\n");
+	}
+	DBG_DATA_PRINTF("\n");
+}
+
+uchar MifarePro_SendCom(char *buffer, int length)
+{
+	uchar status;
+	int i;
+
+	DBG_QPBOC_PRINTF("MifarePro_SendCom():  sending length = %d\n", length);
+	menu_print(buffer, length);
+
+	memset(SRCPUCardBuf, 0, sizeof(SRCPUCardBuf));
+	SRCPUCardCount = 0;
+	status = TypeAPiccSendAPDU(buffer, SRCPUCardBuf, length, &SRCPUCardCount);
+
+	DBG_QPBOC_PRINTF("MifarePro_SendCom(): SRCPUCardCount = %d, status = %d\n", SRCPUCardCount, status);
+	if (status == MI_OK)
+	{
+		menu_print(SRCPUCardBuf, SRCPUCardCount);
+	}
+
+	return status;
+}
+
+/*********************************************************************** 
+FUNCTION: 卡应用选择
+PARAMETER DESCRIPTION:
+	filefalg - P2
+	filename - 选择的文件 
+	len - 长度
+RETURN: 
+	state - 返回的状态值
+***********************************************************************/
+uchar TERMAPP_SelectApp(const uchar P1,const uchar P2,uchar len,const uchar *filename, uchar * state)
+{
+	uchar result;
+	uchar sbuf[0x50];
+	uchar i=0;
+
+	DBG_QPBOC_PRINTF("TERMAPP_SelectApp() is called.\n");
+	
+	sbuf[0] = 0x00;
+	sbuf[1] = 0xa4;
+	sbuf[2] = P1;
+	
+	sbuf[3] = P2;
+	sbuf[4] = len;
+	memcpy(sbuf+5, filename, len);
+	 		
+	for(i=0;i<1;i++) 		
+	{
+		state[0] = 0;
+		state[1] = 0;
+		result = MifarePro_SendCom(sbuf,len+5);
+		if((SRCPUCardBuf[SRCPUCardCount -2]==0x90)&&(SRCPUCardBuf[SRCPUCardCount -1]==0x0)) break;
+	}
+
+	if (MI_OK == result)
+	{
+		memcpy(state,SRCPUCardBuf+SRCPUCardCount -2,2);
+	}
+
+	return result;
+
+	/*	
+	if (MI_OK == result)
+	{
+		if((state[0]==0x90)&&(state[1]==0x0)) 
+		{
+			return OK;
+		}
+		else 
+			return NOK;
+	}  
+	else 
+		return NOK;
+	*/
+}
+
+/*********************************************************************** 
+FUNCTION:  READ BINARY
+PARAMETER DESCRIPTION:
+    sfi：短文件标识符
+    lc ：返回的数据长度
+RETURN: 
+	state - 返回的状态值
+***********************************************************************/
+uchar TERMAPP_ReadBinary(uchar sfi,uchar lc,uchar *state) 
+{ 
+	uchar result;
+	uchar sbuf[0x50];
+
+	DBG_QPBOC_PRINTF("TERMAPP_ReadBinary() is called.\n");
+
+	sbuf[0] = 0x00;
+	sbuf[1] = 0xb0;
+	sbuf[2] = 0x80 | sfi;
+	sbuf[3] = 0x00;
+	sbuf[4] = lc;
+	
+	result = MifarePro_SendCom(sbuf,5);
+	memcpy(state,SRCPUCardBuf+SRCPUCardCount -2,2);
+	return result;
+}
+
+/***************************************************************
+FUNCTION:  READ RECORD
+PARAMETER DESCRIPTION:
+    sfi - p2 短文件标识符
+    num - p1 记录号
+RETURN: 
+	state - 返回的状态值
+****************************************************************/
+uchar TERMAPP_ReadRecord(uchar sfi,uchar num,uchar *state)
+{
+    uchar result;
+	uchar sbuf[0x50];
+	uchar j;
+
+	DBG_QPBOC_PRINTF("TERMAPP_ReadRecord() is called.\n");
+
+    sbuf[0] = 0x00;
+    sbuf[1] = 0xb2;
+    sbuf[2] = num;
+    sbuf[3] = sfi | 0x04;		 
+    sbuf[4] = 0x00;
+
+	for(j=0;j<1;j++)                          
+	{
+		result = MifarePro_SendCom(sbuf,5);
+			 
+	    if (MI_OK == result)
+	    {
+		memcpy(state,SRCPUCardBuf+SRCPUCardCount -2,2);
+	        if((state[0]==0x90)&&(state[1]==0x0)) 
+			{
+				return OK;
+			}
+	    }
+	}
+	return NOK;
+}
+
+/************************************************************************
+FUNCTION:  GET GPO
+PARAMETER DESCRIPTION:
+    *gpolist - 标签数据
+    len - gpolist len
+RETURN: 
+	state - 返回的状态值
+************************************************************************/
+uchar TERMAPP_GetGPO(uchar *gpolist,uchar len,uchar *state)	 
+{
+	uchar i,result;
+	uchar sbuf[256];
+	uchar sbuf1[256];
+	uchar dataV[256];
+	uchar dataVindex=0;
+	uchar cmd[4]="\x80\xA8\x00\x00";
+
+	DBG_QPBOC_PRINTF("TERMAPP_GetGPO() is called.\n");
+
+	memcpy(dataV,"\x83",1) ;									
+	dataVindex++;												 
+	if(len > 127) {memcpy(dataV+dataVindex,"\x81",1);dataVindex++;}			
+	memcpy(dataV+dataVindex,(uchar *)&len,1);								
+	dataVindex++;
+	memcpy(dataV+dataVindex,gpolist,len);
+	dataVindex+=len;
+
+	memcpy(sbuf,cmd,4);
+	sbuf[4]=dataVindex;
+	memcpy(sbuf+5,dataV,dataVindex);
+
+    for(i=0;i<1;i++)
+	{
+		result = MifarePro_SendCom(sbuf,dataVindex+5);
+		memcpy(state,SRCPUCardBuf+SRCPUCardCount -2,2);
+		if (MI_OK == result)
+	    {
+	        if((state[0]==0x90)&&(state[1]==0x0)) 
+			{
+				return OK;				
+			}
+		}
+	}
+	return NOK;
+}
+
+/************************************************************************  
+FUNCTION:  GetBalance
+PARAMETER DESCRIPTION:
+
+RETURN:	
+	Tag:9F 79 电子现金可用余额			
+***********************************************************************/
+uchar TERMAPP_GetBalance() 
+{ 
+	uchar result;
+	uchar sbuf[0x50]={0};
+	uchar dispbuf[10];
+	uchar DDF[]={"2PAY.SYS.DDF01"};
+	uchar AID[]={0xA0,0x00,0x00,0x03,0x33,0x01,0x01,0x01};	
+	uchar state[2]={0};
+	uchar tryNo=0;
+	uchar Amount[6]={0};
+	ulong uAmount;
+	
+	DBG_QPBOC_PRINTF("TERMAPP_GetBalance() is called.\n");
+
+	sbuf[0] = 0x80;
+	sbuf[1] = 0xCA;
+	sbuf[2] = 0x9F;
+	sbuf[3] = 0x79;
+	sbuf[4] = 0x00;
+
+	for(tryNo=0;tryNo<3;tryNo++)
+	{
+		result = SearchCard();
+		if(result != OK)
+		{
+			continue;
+		}
+		
+		result = TERMAPP_SelectApp(0x04,0x00,14,DDF,(uchar *)state);
+		if (result != OK)
+		{
+			continue;
+		}
+		delay_1ms(100);
+
+		result = TERMAPP_SelectApp(0x04,0x00,8,AID,(uchar *)state);
+		if (result != OK)
+		{
+			continue;
+		}
+		delay_1ms(100);
+
+		result = MifarePro_SendCom(sbuf,5);
+		if (result != OK)
+		{
+			continue;
+		}
+		delay_1ms(100);
+
+		memcpy(Amount,SRCPUCardBuf+3,6);
+		uAmount=((Amount[3]&0xf0)>>4)*100000+(Amount[3]&0x0f)*10000+((Amount[4]&0xf0)>>4)*1000+(Amount[4]&0x0f)*100+((Amount[5]&0xf0)>>4)*10+(Amount[5]&0x0f);
+		sprintf(dispbuf,"   %5d",uAmount);
+		//显示余额
+
+		DBG_QPBOC_PRINTF("Balance: %s\n", dispbuf);
+	}
+
+	if (result != OK)
+	{
+		DBG_QPBOC_PRINTF("Status = %d\n", result);
+	}
+
+	return OK;
+}
