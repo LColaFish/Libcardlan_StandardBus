@@ -1,5 +1,8 @@
 部分文件介绍
 ***************************************************************************
+libcardlan_StandardBus.c：
+所有的接口都在该文件里定义。接口的使用方法见文件内注释
+
 Android.mk：
 指定静态库libcrypto.a和libssl.a，并执行Android_663.mk和Android_example.mk。
 //一般不用改动
