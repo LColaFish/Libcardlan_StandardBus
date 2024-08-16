@@ -1,3 +1,5 @@
+部分文件介绍
+***************************************************************************
 Android.mk：
 指定静态库libcrypto.a和libssl.a，并执行Android_663.mk和Android_example.mk。
 //一般不用改动
@@ -26,3 +28,7 @@ libcardlan_mifareplus.c:
 libcardlan_StandardBus_util.c：
 杂项，主要是一些数据类型转换用的函数和一个显示结构体变量JTB_CardInfo所有成员（也就是进行卡片消费过程中获取的数据，需自行填入）的函数
 
+
+使用说明
+**************************************************************
+请确认已配置好NDK，使用build_cmd.bat即可自动完成so库编译。默认生成位置：./libs/armeabi-v7a

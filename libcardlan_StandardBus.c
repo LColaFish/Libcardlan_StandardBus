@@ -5,6 +5,13 @@
 #include <linux/spi/spidev.h>
 #include <termios.h>
 
+/**********************************************
+ * 
+ * 注意：在libcardlan_StandardBus_util.h中
+ * 已将JNI_API_DEF定义为Java_com_cardlan_colafish_psam
+ * 
+ * *******************************************/
+
 #include "encrypt_lib/des.h"
 #include "encrypt_lib/mac.h"
 #include "encrypt_lib/stades.h"
@@ -69,6 +76,7 @@ static int fd_serial;
 
   返回值 说明：    OutDataArray
  */
+/****************** 该部分未经测试 ************************ */
 JNIEXPORT jint JNICALL JNI_API_DEF(DesCard)(JNIEnv *env, jobject obj, jbyteArray KeyArray, jbyteArray DataArray, jbyteArray OutDataArray)
 {
     (void)obj;            
@@ -131,6 +139,7 @@ JNIEXPORT jint JNICALL JNI_API_DEF(DesCard)(JNIEnv *env, jobject obj, jbyteArray
 
   返回值 说明：    char    :是否加密成功
 *************************************************************************************/
+/****************** 该部分未经测试 ************************ */
 JNIEXPORT jchar JNICALL JNI_API_DEF(RunDes)(JNIEnv *env, jobject obj, jchar bType, jchar bMode, jbyteArray InBuff, jbyteArray OutBuff, jint datalen, jbyteArray KeyIn, jchar keylen)
 {
     (void)obj;            
@@ -184,6 +193,7 @@ JNIEXPORT jchar JNICALL JNI_API_DEF(RunDes)(JNIEnv *env, jobject obj, jchar bTyp
 
   返回值 说明：    char
 **************************************************************/
+/****************** 该部分未经测试 ************************ */
 JNIEXPORT jchar JNICALL JNI_API_DEF(MacAnyLength)(JNIEnv *env, jobject obj, jbyteArray InitIn, jbyteArray InBuff, jbyteArray OutBuff, jint datalen, jbyteArray KeyIn, jchar keylen)
 {
     (void)obj;            
@@ -324,9 +334,8 @@ JNIEXPORT jint JNICALL JNI_API_DEF(InitPsam)(JNIEnv *env, jobject obj,jint PsamI
 {
     (void)env;                                                                                                                               
     (void)obj;
-////
+//********************************补充的初始化 */
     int ret = 0;
-    unsigned char function_temp = 0;
     ret = init_mcu_spi();
     if(ret != 0)
     {
@@ -345,6 +354,7 @@ JNIEXPORT jint JNICALL JNI_API_DEF(InitPsam)(JNIEnv *env, jobject obj,jint PsamI
         LOGI("[%s %d] error ret = %d\n",__FUNCTION__,__LINE__,ret);
         return ret;
     }
+//********************************************************************** */
     ret = InitPsam(PsamIndex,BaudRate);
     if(ret != 0)
     {
@@ -366,6 +376,9 @@ JNIEXPORT jint JNICALL JNI_API_DEF(InitPsam)(JNIEnv *env, jobject obj,jint PsamI
 			rcvcmd： 接收返回数据;
 			rcvlen：接收返回数据长度；（数据类型是数组，返回长度位于数组第1位）
 - 返回值:操作结果：0成功，其他失败 
+
+通讯协议：spi通讯协议0.2.doc
+具体命令说明：中国金融PSAM卡规范(2005)---PSAM卡文件机构&操作命令.pdf、PSAM2_KL使用说明.docx
 **************************************************************************************************************/
 JNIEXPORT jint JNICALL JNI_API_DEF(PsamCmd)(JNIEnv *env, jobject obj,jint PsamIndex,jbyteArray sendcmd,jint sendlen,jbyteArray rcvcmd,jint *rcvlen)                                                                
 {
@@ -379,16 +392,16 @@ JNIEXPORT jint JNICALL JNI_API_DEF(PsamCmd)(JNIEnv *env, jobject obj,jint PsamIn
 	int i =0;
 	
 	
-	jbyte *getbuff = (*env)->GetByteArrayElements(env,sendcmd,0);
+	jbyte *getbuff = (*env)->GetByteArrayElements(env,sendcmd,0); //将命令储存在缓存中
 	
 	 for(i = 0; i < sendlen; i++)
     {
         sendbuf[i] = getbuff[i];
     }
 
-    (*env)->ReleaseByteArrayElements(env, sendcmd, getbuff, 0);
+    (*env)->ReleaseByteArrayElements(env, sendcmd, getbuff, 0); //每次调用GetByteArrayElements后必须再调用调用一次此条
 	
-    ret = PsamCmd(PsamIndex,sendbuf,sendlen,rcvbuf,&len);
+    ret = PsamCmd(PsamIndex,sendbuf,sendlen,rcvbuf,&len); //发送命令
     if(ret != 0)
     {
         LOGI("[ %s %d ]Send Psam Command error ret : %d!!\n",__FUNCTION__,__LINE__,ret);
@@ -397,11 +410,11 @@ JNIEXPORT jint JNICALL JNI_API_DEF(PsamCmd)(JNIEnv *env, jobject obj,jint PsamIn
     }
 
     {
-        (*env)->SetByteArrayRegion(env, rcvcmd, 0, len, (jbyte *)rcvbuf);
+        (*env)->SetByteArrayRegion(env, rcvcmd, 0, len, (jbyte *)rcvbuf); //将收到的数据返回到rcvcmd中，只能通过该类函数将数据返回到java端
         jint receivelen[4];
         receivelen [0] = len;
-        (*env)->SetIntArrayRegion(env, rcvlen, 0, 4, receivelen);
-        //*rcvlen = (jint)len; 不返回数值
+        (*env)->SetIntArrayRegion(env, rcvlen, 0, 4, receivelen); //收到的数据的长度
+        //*rcvlen = (jint)len; 不可使用，无法返回数值
     }
     
     LOGD("%s\n", __FUNCTION__);                                                                                                                                  
@@ -436,10 +449,14 @@ JNIEXPORT jint JNICALL JNI_API_DEF(GetPsamAtr)(JNIEnv *env, jobject obj,jchar Ps
 
 
 
-/*
+/************************************************************************
 需要输入PSAM卡所在槽和所在槽初始化的波特率，一般已固定为5槽和9600波特率
-返回值 psamID数据类型为ByteArray，一般为6位十六进制数
-*/
+返回值 psamID需传入一个ByteArray
+
+2024.08.16
+经确认该接口返回的是终端机编号，实际PSAM卡号请通过PsamCmd发送命令00B095000E获取
+返回数据前10位、11位、12位、13~14位分别为PSAM卡序列号、PSAM卡版本号、密钥卡类型、发卡方自定义FCI数据
+**************************************************************************/
 JNIEXPORT jint JNICALL JNI_API_DEF(GetPsamID)(JNIEnv *env, jobject obj,jint PsamIndex,jint BaudRate , jbyteArray psamID)                                                                
 {
     (void)env;                                                                                                                               
@@ -513,6 +530,7 @@ JNIEXPORT jint JNICALL JNI_API_DEF(TERMAPP_QPBOCTermInit)(JNIEnv *env, jobject o
 #endif
 
 /* SPI Operation */
+/****************** 该部分未经测试 ************************ */
 JNIEXPORT jobject JNICALL JNI_API_DEF(SPIOpen)(JNIEnv *env, jclass thiz, jstring path, jint flags)
 {
     int ret = 0;
@@ -583,6 +601,7 @@ JNIEXPORT jobject JNICALL JNI_API_DEF(SPIOpen)(JNIEnv *env, jclass thiz, jstring
     return mFileDescriptor;
 }
 
+/****************** 该部分未经测试 ************************ */
 JNIEXPORT void JNICALL JNI_API_DEF(SPIClose)(JNIEnv *env, jobject thiz)
 {
     LOGD("%s\n",__func__);
@@ -600,6 +619,7 @@ JNIEXPORT void JNICALL JNI_API_DEF(SPIClose)(JNIEnv *env, jobject thiz)
     close(descriptor);
 }
 
+/****************** 该部分未经测试 ************************ */
 JNIEXPORT jbyteArray  JNICALL JNI_API_DEF(SPITransfer)(JNIEnv *env, jclass thiz, jbyteArray array)
 {
     int ret;
@@ -641,6 +661,7 @@ JNIEXPORT jbyteArray  JNICALL JNI_API_DEF(SPITransfer)(JNIEnv *env, jclass thiz,
     return  jarrRecv;
 }
 
+/****************** 该部分未经测试 ************************ */
 static speed_t getBaudrate(jint baudrate)
 {
     switch(baudrate) {
@@ -684,6 +705,7 @@ static speed_t getBaudrate(jint baudrate)
  * Method:    open
  * Signature: (Ljava/lang/String;II)Ljava/io/FileDescriptor;
  */
+/****************** 该部分未经测试 ************************ */
 JNIEXPORT jobject JNICALL JNI_API_DEF(SerialOpen)(JNIEnv *env, jclass thiz, jstring path, jint baudrate, jint flags)
 {
     speed_t speed;
@@ -760,6 +782,7 @@ JNIEXPORT jobject JNICALL JNI_API_DEF(SerialOpen)(JNIEnv *env, jclass thiz, jstr
  * Signature: ()V
  * com.cardlan.twoshowinonescreen.serialport
  */
+/****************** 该部分未经测试 ************************ */
 JNIEXPORT void JNICALL JNI_API_DEF(SerialClose)(JNIEnv *env, jobject thiz)
 {
     LOGD("%s\n",__func__);
@@ -780,10 +803,12 @@ JNIEXPORT void JNICALL JNI_API_DEF(SerialClose)(JNIEnv *env, jobject thiz)
 
 /* *************************************************************************************************************
 - 函数说明 :复位卡片(寻卡，防碰撞，选卡)
-- 输入参数 :data:卡片序列号(UID)    
-- 返回值:卡类型 
+- 输入参数 :array:卡片序列号(UID)    
+- 返回值:卡类型，无卡返回0
+
+每次放上卡片后都需要调用一次
 **************************************************************************************************************/
-JNIEXPORT jint JNICALL JNI_API_DEF(CardReset)(JNIEnv *env, jobject obj, jbyteArray array, jint type)                                                                
+JNIEXPORT jint JNICALL JNI_API_DEF(CardReset)(JNIEnv *env, jobject obj, jbyteArray array)                                                                
 {
     (void)obj;                                                                                                                               
 
@@ -815,6 +840,7 @@ JNIEXPORT void JNICALL JNI_API_DEF(CardHalt)(JNIEnv *env, jobject obj)
 - 输出参数 : 要读出的数据
 - 返回值: 0 成功；1写密钥错误,2 密钥验证错误；3 读该块错误
 **************************************************************************************************************/
+/****************** 该部分未经测试 ************************ */
 JNIEXPORT jint JNICALL JNI_API_DEF(ReadOne2FiveSectorDataFromCard)(JNIEnv *env, jobject obj,
                                                                   jchar VerifyFlag, jbyteArray key_array, 
                                                                   jchar mode, jbyteArray array)
@@ -865,6 +891,7 @@ JNIEXPORT jint JNICALL JNI_API_DEF(ReadOne2FiveSectorDataFromCard)(JNIEnv *env, 
 - 输出参数 : 要读出的数据
 - 返回值: 0 成功；1写密钥错误,2 密钥验证错误；3 读该块错误
 **************************************************************************************************************/
+/****************** 该部分未经测试 ************************ */
 JNIEXPORT jbyteArray JNICALL JNI_API_DEF(ReadOneSectorDataFromCard)(JNIEnv *env, jobject obj,
                                                             jchar SectorNo, jchar BlockNo,
                                                             jchar VerifyFlag, jbyteArray key_array, 
@@ -915,6 +942,7 @@ JNIEXPORT jbyteArray JNICALL JNI_API_DEF(ReadOneSectorDataFromCard)(JNIEnv *env,
                   key:卡片密钥     mode:密钥类型
 - 输出参数 :  0 成功；1写密钥错误,2 密钥验证错误；3 写该块错误
 **************************************************************************************************************/
+/****************** 该部分未经测试 ************************ */
 JNIEXPORT jint JNICALL JNI_API_DEF(WriteOneSertorDataToCard)(JNIEnv *env, jobject obj, jbyteArray SectorArray, 
                                                                                                 jchar SectorNo, 
                                                                                                 jchar BlockNo,
@@ -974,6 +1002,16 @@ JNIEXPORT jint JNICALL JNI_API_DEF(WriteOneSertorDataToCard)(JNIEnv *env, jobjec
 }
 
 /* CPU Card Operation */
+/**************************************************************************************************************
+- 函数说明 : 将命令发送到CPU卡中
+- 输入参数 : Cmd: 要发送的命令    
+            Recv:接受返回数据 
+
+- 输出参数 :  0 成功
+
+PSAM卡和CPU卡通讯协议不一致，发送命令请使用各自的Cmd接口
+具体命令说明：中国金融集成电路（IC）卡规范第14部分：非接触式IC卡小额支付扩展应用规范.pdf
+**************************************************************************************************************/
 JNIEXPORT jint JNICALL JNI_API_DEF(CpuSendCmd)(JNIEnv *env, jobject obj, jbyteArray Cmd, jbyteArray Recv)
 {
     char recive_buff[256];
@@ -996,7 +1034,7 @@ JNIEXPORT jint JNICALL JNI_API_DEF(CpuSendCmd)(JNIEnv *env, jobject obj, jbyteAr
 
     (*env)->ReleaseByteArrayElements(env, Cmd, bytearr, 0);
 
-    result = mifare_read_and_write(cmd_buff,len,recive_buff);
+    result = mifare_read_and_write(cmd_buff,len,recive_buff); //已封装好的命令发送函数
     if(result < 2)
     {
         LOGI("mifare_read_and_write fail result:%02X SW1:%02X SW2:%02X\n",result,recive_buff[0],recive_buff[1]);
@@ -1007,6 +1045,8 @@ JNIEXPORT jint JNICALL JNI_API_DEF(CpuSendCmd)(JNIEnv *env, jobject obj, jbyteAr
     return 0;
     
 }
+
+/****************** 以下部分未经测试 ************************ */
 
 /**************************************************************************************************************
 - 函数说明 : 将数据块转换成数值块
