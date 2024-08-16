@@ -1,0 +1,7 @@
+---- init_mcu_spi Matches (3 in 3 files) ----
+InitDev in cardlan_devctrl.c (E:\618C\libcardlan_StandardBus) : 
+    ret = init_mcu_spi();
+mcu_opt.c (E:\618C\libcardlan_StandardBus\mcu_opt) line 174 : 
+int init_mcu_spi(void)
+mcu_opt.h (E:\618C\libcardlan_StandardBus\mcu_opt) line 5 : 
+int init_mcu_spi(void);

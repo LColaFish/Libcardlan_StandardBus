@@ -1,0 +1,2267 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <netinet/ip.h>   
+#include <netinet/ip_icmp.h>  
+#include <sys/wait.h>
+#include <sys/time.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <signal.h>
+#include <time.h>
+#include <errno.h>
+#include <netinet/ip.h>   
+#include <netinet/ip_icmp.h>
+
+#include "TERMAPP_record.h"
+#include "../bzdes/stades.h"
+#include "../gui/RC500.h"
+#include "../include/apparel.h"
+
+struct PbocTagContainer TagData;
+struct PBOC_TAG_CONT_YunNanBank YNBank_Tag;
+
+unsigned char G_SignInfo_PBOC = 0;		/* 银行卡签到的命令标志 */
+unsigned char G_Consume_PBOC = 0;		/* 上传消费信息 */
+unsigned char G_BatchSett_PBOC = 0;		/* 银行卡结算的命令标志 */
+
+extern CardInform CardLan;
+
+struct UploadRecodContainer UploadData = {
+	"\x00\x00\x00\x00\x00\x90",
+	"\x11\x10\x94",
+	"\x25\x03",
+	"\x32\x30\x31\x35\x32\x30\x38\x31",
+	"\x33\x30\x35\x35\x31\x30\x36\x34\x31\x31\x31\x30\x30\x30\x31",
+	"\x31\x35\x36",	
+	"\x00\x00\x24",	
+	"\x43\x55\x50",	
+	"\x00\x00\x00\x00\x00\x00\x00\x00",
+};
+
+
+struct SettleContainer SettleData = {
+	"\x00\x00\x09",
+	"\x32\x30\x31\x30\x30\x33\x34\x33",
+	"\x39\x35\x32\x35\x31\x30\x36\x34\x31\x31\x31\x30\x30\x30\x31",
+	"\x00",
+	"\x31\x35\x36",
+	"\x00",
+	"\x00\x11",
+	"\x20\x10",
+	"\x30\x30\x31",
+};
+
+struct strPBOCKey PbocKey ={
+	"\xD9\x38\xB3\x0D\x15\x3E\x8F\x5B\x49\x2C\x16\xA8\xA8\x4F\xE6\x29",
+	"\x0A\x0B\x0C\x0D\x0E\x0F\x01\x02",
+};
+
+void DebugPrintChar(char *name, unsigned char *data, int len)
+{
+	int i = 0;
+	printf("%s :", name);
+	for(i=0; i<len; i++)
+	{
+		if((i%8 == 0) && (i))
+			printf("  ");
+		
+		if((i%16 == 0) && (i))
+			printf("\n");
+		
+		printf("%02X ", *(data++));
+	}
+	printf("\n");
+}
+
+int ParseIntToHex(int value, char *data, int index, int lenght)
+{
+	int i = 0;
+	
+  	if (data != NULL && index >= 0 && lenght >= 0 && strlen(data) >= index + lenght)
+	{
+		for (i = 0; i < lenght; i++)
+		{
+			data[index + lenght - 1 - i] = (char)((value >> (8 * i)) & 0xFF);
+		}
+	}
+
+	return 0;
+}
+
+void SetBitMap(char* bitmap, int bit)
+{
+    int index, offset;
+    bit -= 1;
+    index = bit / 8 ;
+    offset = bit % 8;
+    bitmap[index] |= (char)(1 << (7 - offset));
+}
+
+/* 这里是进行单倍的des加密 */
+
+void PbocEncrypt_DES(char *dataIn, int datalen, char* dataOut, int *Outlen, char *key)
+{
+	unsigned char TempBuf[8];
+	unsigned char OutTempBuf[16];
+	unsigned char OutTempBuf_Hex[256];
+	int CurPost = 0, i = 0, j = 0;
+	des_context ctx;
+
+	memset(OutTempBuf, 0, sizeof(OutTempBuf));
+
+	DebugPrintChar("key", key, 8);
+	while(datalen > 0)
+	{
+		memcpy(TempBuf, dataIn+CurPost, 8);
+		des_set_key(&ctx, key);
+		des_crypt(ctx.esk, TempBuf, OutTempBuf);
+		memcpy(dataOut+CurPost, OutTempBuf, 8);
+		datalen -= 8;
+		CurPost += 8;
+	}
+	
+	
+	for (i = 0; i < CurPost; i++)
+	{
+		sprintf(OutTempBuf_Hex + 2*i, "%02X", (unsigned char)dataOut[i]);
+	}
+	DebugPrintf("#################\n");
+	//printf("OutTempBuf_Hex = %s\n", OutTempBuf_Hex);
+	//*Outlen = CurPost;	
+	strcpy(dataOut, OutTempBuf_Hex);
+	//*Outlen = 2 * CurPost;	//一个字符加密后用两个字符来表示
+
+	return 0;
+}
+
+
+/* 这里是进行单倍的des解密 */
+
+int PbocDecrypt_DES(char *dataIn, int datalen, char* dataOut, int *Outlen, char *key)
+{
+
+	unsigned char TempBuf[8];
+	unsigned char OutTempBuf[16];
+	unsigned char OutTempBuf_Hex[128];
+	int CurPost = 0, i = 0, j = 0;
+	des_context ctx;
+
+	memset(OutTempBuf, 0, sizeof(OutTempBuf));
+	printf("key = %s\n", key);
+	
+	while(datalen > 0)
+	{
+		memcpy(TempBuf, dataIn+CurPost, 8);
+		des_set_key(&ctx, key);
+		des_encrypt(ctx.dsk, TempBuf, OutTempBuf);
+		memcpy(dataOut+CurPost, OutTempBuf, 8);
+		DebugPrintf("OutTempBuf = %s\n", OutTempBuf);
+		datalen -= 8;
+		CurPost += 8;
+	}
+	
+	for (i = 0; i < CurPost; i++)
+	{
+		sprintf(OutTempBuf_Hex + 2*i, "%02X", (unsigned char)dataOut[i]);
+	}
+	
+	//printf("OutTempBuf_Hex = %s\n", OutTempBuf_Hex);
+	//strcpy(dataOut, OutTempBuf_Hex);
+	//*Outlen = 2*CurPost;	//一个字符加密后用两个字符来表示
+
+}
+
+
+int BuildSignInInfoByte(unsigned char *data)
+{
+	char bitmap[8], tempBuf[32];
+	//unsigned char data[256];
+	int index=0, BitMapPos = 0;
+	
+	
+	memset(data, 0, sizeof(data));
+	memset(bitmap, 0, sizeof(bitmap));
+	memset(tempBuf, 0, sizeof(tempBuf));
+
+	data[index] = 0x00;
+	data[index+1] = 0x3C;
+	index += 2;
+
+	//TPDU共10位 5个字节，前两位为TPDU ID 一般为"60",中间4位为TPDU 目的地址,最后4位为TPDU 源地址为"0000",
+	//默认值为"60 00 03 00 00"
+	
+    data[index]=0x60;
+    //data[index + 1]=0x05;//测试
+    data[index + 1] = 0x00;//正式
+    data[index + 2]=0x09;
+    data[index + 3]=0x00;
+    data[index + 4]=0x00;
+    index += 5;
+	
+	//报文头：应用类别 1
+    data[index] = 0x60;
+    index += 1;
+	
+    //报文头：软件版本号 1
+    data[index ] = 0x21;
+    index += 1;
+	
+    //报文头：终端状态和处理要求 00
+    data[index] = 0x00;
+    index += 1;
+	
+    //报文头：保留 3 
+    data[index] = 0x00;
+    data[index + 1] = 0x00;
+    data[index + 2] = 0x00;
+    index += 3;
+	DebugPrintf("index = %d\n", index);
+	
+    //消息类型0 1
+    data[index] = 0x08;
+    data[index+1] = 0x00;	
+	index += 2;
+	DebugPrintf("index = %d\n", index);
+
+	//这里是预留给位元表的
+	BitMapPos = index;
+	index += 8;
+
+	//pos机流水号
+	data[index] = 0x00;
+	data[index+1] = 0x00;
+	data[index+2] = 0x52;
+
+	//受卡方终端标识 
+	SetBitMap(bitmap, 11);
+	index += 3;
+
+	//终端代码	41域
+	SetBitMap(bitmap, 41);
+	tempBuf[7] = 0x11;
+	memcpy(&data[index], tempBuf, 8);
+	index += 8;
+	DebugPrintf("index = %d\n", index);
+
+	//商户代码	42域
+	SetBitMap(bitmap, 42);
+	memset(tempBuf, 0xFF, sizeof(tempBuf));
+	memcpy(&data[index], tempBuf, 15);
+	index += 15;
+	DebugPrintf("index = %d\n", index);
+
+	//自定义域	60域
+	SetBitMap(bitmap, 60);
+	data[index+1] = 0x11;
+	index += 2;
+
+	//交易码类型 	60.1域
+	data[index] = 0x00;
+	index += 1;
+	
+	//批次号 60.2域
+	data[index] = 0x00;
+	data[index+1] = 0x00;
+	data[index+2] = 0x38;
+	index += 3;
+	DebugPrintf("index = %d\n", index);
+	
+	//网络管理信息码 60.3域
+	data[index] = 0x00;
+	data[index + 1] = 0x10;
+	index += 2;
+	
+	//63 自定义域	ans...003	LLLVAR	ASCII 2	M(44,2)	
+	SetBitMap(bitmap, 63);
+	data[index] = 0x00;
+	data[index + 1] = 0x03;
+	index += 2;
+	DebugPrintf("index = %d\n", index);
+
+	//操作员代码
+	data[index] = 0x30;
+	data[index+1] = 0x30;
+	data[index+2] = 0x31;
+	index += 3;
+	data[index] = '\0';
+
+	memcpy(data+BitMapPos, bitmap, 8);
+	
+	printf("index = %d\n", index);
+	
+	DebugPrintChar("签到信息", data, index);
+
+	return 0;
+}
+
+int Convert_HexTOInt(char *HexBuf, int len)
+{
+	char *p = HexBuf;
+	int i = 0, value = 0;
+	
+	while(len--)
+	{
+		if((*p >= '0') && (*p <= '9'))
+	        i = (*p - '0');
+	    else if ((*p >= 'A') && (*p <= 'F'))
+	        i = (*p - 'A' + 10);
+	    else if ((*p >= 'a') && (*p <= 'f'))
+	        i = (*p - 'a' + 10);
+	    else
+	        i = -1;
+		
+		if (i >= 0)
+            value = value * 16 + i;
+		
+        p++;		
+	}
+	//printf("value = %d\n", value);
+	return value;
+}
+
+int Convert_StrToInt(char *HexBuf, int len)
+{
+	char *p = HexBuf;
+	int i = 0, value = 0;
+	while(len--)
+	{
+		if((*p >= '0') && (*p <= '9'))
+	        i = (*p - '0');
+	    else
+	        i = -1;
+		
+		if (i >= 0)
+            value = value * 10 + i;
+		
+        p++;		
+	}
+	//printf("value = %d\n", value);
+	return value;
+}
+
+int Convert_HexTOStr(unsigned char *InBuf, int InLen,unsigned char *OutBuf, int *OutLen)
+{
+	int i = 0, j = 0;
+
+	for(i=0; i< InLen; i += 2)
+	{
+		OutBuf[j] = Convert_HexTOInt(InBuf+i, 2);
+		
+		//printf("OutBuf[%d] = %02X ", j,OutBuf[j]);
+		j++;
+ 	}
+	printf("\n");
+
+	*OutLen = InLen/2;
+	
+	return 0;
+}
+
+
+int Convert_IntTOBcd(int num,unsigned char *OutBuf)
+{
+	int i = 0, j = 0;
+	unsigned char NumBuf[8];
+
+	memset(NumBuf, 0, sizeof(NumBuf));
+	sprintf(NumBuf, "%04d", num);
+
+	for(i=0; i<4; i+=2)
+	{
+		OutBuf[j] = (NumBuf[i] - '0') << 4 | (NumBuf[i+1] - '0');
+		j++;
+	}
+
+	return 0;
+}
+
+int Convert_IntTOBcd_2(int num,unsigned char *OutBuf)
+{
+	int i = 0, j = 0;
+	unsigned char NumBuf[16];
+
+	memset(NumBuf, 0, sizeof(NumBuf));
+	sprintf(NumBuf, "%08d", num);
+	
+
+	for(i=0; i<8; i+=2)
+	{
+		OutBuf[j] = (NumBuf[i] - '0') << 4 | (NumBuf[i+1] - '0');
+		j++;
+	}
+//	printf("输入BUF:%s\n",NumBuf);
+//	printf("输出BUF:%02x%02x%02x%02x\n",OutBuf[0],OutBuf[1],OutBuf[2],OutBuf[3]);
+
+	return 0;
+}
+
+
+//根据得到的位元表信息，将数据逐一取出
+int GetBitMap(char *pBitDataIn ,char *pBitMapOut)
+{
+	int i, j;
+	unsigned char HexChar, TempBuf[8];
+
+	for(i=0; i<8; i++)
+	{
+		memcpy(TempBuf, pBitDataIn+2*i, 2);
+		HexChar = Convert_HexTOInt(TempBuf, 2);
+		//printf("HexChar = 0x%02X\n", HexChar);
+		
+		for(j=0; j<8; j++)
+		{
+			pBitMapOut[i*8+ (7-j)] = (HexChar >> j) & (0x01);
+			//printf("%X\n", pBitMapOut[i*8+j]);
+		}
+	}
+	//printf("\n");
+	
+	return 0;
+}
+
+
+int GetDecodeBsaeKey(char *sour, int len)
+{
+	unsigned char TempBuf[16], TempBuf_HEX[16];
+	int TempLen = 0, Outlen;
+
+	DebugPrintf("sour = %s[%d]\n", sour, len);
+
+	memset(TempBuf_HEX, 0, sizeof(TempBuf_HEX));
+	memset(TempBuf, 0, sizeof(TempBuf));
+
+	memcpy(TempBuf_HEX, sour + len/2, 16);
+
+	Convert_HexTOStr(TempBuf_HEX, 16, TempBuf, &TempLen);
+	DebugPrintf("TempLen = %d\n", TempLen);
+
+	memset(PbocKey.DecryptKey, 0, sizeof(PbocKey.DecryptKey));
+	
+	PbocDecrypt_DES(TempBuf, TempLen, PbocKey.DecryptKey, &Outlen, PbocKey.BaseKey);
+	DebugPrintChar("DecryptKey", PbocKey.DecryptKey, 8);
+
+	return 0;
+}
+
+//返回：004F 6000000003612200000000 0810 003800010AC00010
+//000001 180147 1002 0848024210 303030323033333033303136 303332303130303334343935323531303634313131303030310011001410020040
+//判断长度是否正确
+int HandleSignReplay(char *str)
+{
+	int RecvLen = 0, i=0, j=0;
+	int index = 0, TempInt = 0,DeviceKeyBuf = 0 ;
+	unsigned char pTempBuf[128], pBitMap[64];
+	unsigned char RecvData[1024];
+
+	struct SignContainerReply SignData;
+	
+	memset(&SignData, 0, sizeof(SignData));
+	memset(pBitMap, 0, sizeof(pBitMap));
+	memset(RecvData, 0, sizeof(RecvData));
+	memset(pTempBuf, 0, sizeof(pTempBuf));
+
+	char *pText = "\x00\x00\x00\x00\x00\x00\x00\x00";
+	//char *pText = "0000000000000000";
+	//char * pStr =   "004F60000000096021000000000810003800010AC0001000000116444710090800096500303030303030303030303030393732303130303334343935323531303634313131303030310011001410090010";
+	char * pStr =     "006960000000096021000000000810003800010AC00014000002145850111908000965003134353835303333313531303030323031353230383133303535313036343131313030303100110000002400100024B2BE021366619F2785CE901640D96E17766C3F2784001126";
+	memcpy(pTempBuf, pStr, 4);
+ 	RecvLen = Convert_HexTOInt(pTempBuf, 4);
+	
+	if(RecvLen != (strlen(pStr)/2 -2))
+	{
+		printf("签到返回数据错误：长度不对！返回数据 : %d\n", RecvLen);
+	}
+
+	for(i=0; i<(2*RecvLen+4); i++)
+	{
+		RecvData[i]= toupper(*pStr++);
+	}
+
+	memset(pTempBuf, 0, sizeof(pTempBuf));
+	memcpy(pTempBuf, RecvData+30 , 16);
+	GetBitMap(pTempBuf, pBitMap);
+
+	//11 受卡方系统跟踪号(POS终端交易流水) 46
+    if (pBitMap[10] == 1)
+    {
+         memcpy(SignData.strSernialNo, RecvData+46, 6);
+		 DebugPrintf("SignData.strSernialNo = %s\n", SignData.strSernialNo);
+    }
+
+	
+	//12 受卡方所在地日期	52 	
+	if(pBitMap[11] == 1)
+	{
+		memcpy(SignData.time.hour, RecvData+52, 2);
+		memcpy(SignData.time.min, RecvData+54, 2);
+		memcpy(SignData.time.sec, RecvData+56, 2);
+		memcpy(SignData.time.month, RecvData+58, 2);
+		memcpy(SignData.time.day, RecvData+60, 2);
+		
+		DebugPrintf("SignData.time.hour = %s\n", SignData.time.hour);
+		DebugPrintf("SignData.time.min = %s\n", SignData.time.min);
+		DebugPrintf("SignData.time.sec = %s\n", SignData.time.sec);
+		DebugPrintf("SignData.time.month = %s\n", SignData.time.month);
+		DebugPrintf("SignData.time.day = %s\n", SignData.time.day);
+	}
+
+	//32	受理方标识码	62 
+	if(pBitMap[31] == 1)
+	{
+		memcpy(pTempBuf, RecvData+62, 2);
+		TempInt = Convert_HexTOInt(pTempBuf, 2);
+		DebugPrintf("TempInt = %d\n", TempInt);
+		memcpy(SignData.AcceptorFlag, RecvData+64, TempInt);
+		DebugPrintf("SignData.AcceptorFlag = %s\n", SignData.AcceptorFlag);
+	}
+
+	//37	检索参考号 		72
+	if(pBitMap[36] == 1)
+	{
+		memcpy(SignData.RetrievalNo, RecvData+72, 24);
+		DebugPrintf("SignData.RetrievalNo = %s\n", SignData.RetrievalNo);
+	}
+
+	//39	应答码			96
+	if(pBitMap[38] == 1)
+	{
+		memcpy(SignData.ReplyCode, RecvData+96, 4);
+		DebugPrintf("SignData.ReplyCode = %s\n", SignData.ReplyCode);
+	}
+
+	//41	受卡机终端标识码	100
+	if(pBitMap[40] == 1)
+	{
+		memcpy(SignData.DeviceNo, RecvData+100, 16);
+		DebugPrintf("SignData.DeviceNo = %s\n", SignData.DeviceNo);
+	}
+
+	//41	受卡方标识码	116
+	if(pBitMap[41] == 1)
+	{
+		memcpy(SignData.strTCode, RecvData+116, 30);
+		DebugPrintf("SignData.strTCode = %s\n", SignData.strTCode);
+	}
+
+	//60 自定义域		146
+	if(pBitMap[59] == 1)
+	{
+		memcpy(pTempBuf, RecvData+146, 4);
+
+		//自定义域的长度
+		TempInt = Convert_StrToInt(pTempBuf, 4);
+		DebugPrintf("TempInt = %d\n", TempInt);
+
+		//交易码类型
+		memcpy(SignData.TradeType, RecvData+150, 2);
+		DebugPrintf("SignData.TradeType = %s\n", SignData.TradeType);
+
+		//批次号
+		memcpy(SignData.strBatchNum, RecvData+152, 6);
+		DebugPrintf("SignData.TradeType = %s\n", SignData.strBatchNum);
+
+		//网络管理信息码
+		memcpy(pTempBuf, RecvData+158, 4);
+		SignData.NetManageCode = Convert_StrToInt(pTempBuf, 3);
+		DebugPrintf("SignData.NetManageCode = %d\n", SignData.NetManageCode);
+	}
+
+
+	memcpy(pTempBuf, RecvData+162, 4);
+	TempInt = Convert_StrToInt(pTempBuf, 4);
+	DebugPrintf("TempInt = %d\n", TempInt);
+	
+	memcpy(SignData.DeviceKeyBuf, RecvData+166, TempInt*2);
+	DebugPrintf("SignData.TradeType = %s\n", SignData.DeviceKeyBuf);
+	memcpy(SignData.DeviceKeyBuf, "9A2726F370A04D430E34C61C03ACE7EEF011454E9EEBA768", 48);
+	DeviceKeyBuf = strlen(SignData.DeviceKeyBuf);
+		
+	GetDecodeBsaeKey(SignData.DeviceKeyBuf, DeviceKeyBuf);
+
+	DebugPrintChar("pText", pText, 8);
+    PbocEncrypt_DES(pText, 8, pTempBuf, TempInt, PbocKey.DecryptKey);
+
+	DebugPrintChar("pTempBuf", pTempBuf , 8);
+	
+	if(!strncmp(pTempBuf, SignData.DeviceKeyBuf+DeviceKeyBuf-8, 8))
+	{
+		printf("It is success to calculate key\n");
+	}
+
+	//EncryptData_DES(dataIn, 16, dataout, &OutLen);
+
+	/* 	  此步还需要处理的数据信息
+	 * 1. 用母pos机下发下来的秘钥来解密最后的面个des秘钥，得到明文秘钥;
+     * 2. 读出文件对比终端代码和商户代码 ;
+     * 3. 向文件里面写记录信息;
+	 */
+	return 0;
+}
+
+int HandelSendReplay(char *RevBuf)
+{
+	int RecvLen = 0, i=0, j=0;
+	int index = 0, TempInt = 0;
+	unsigned char pTempBuf[128], pBitMap[64];
+	unsigned char RecvData[1024], TempChar;
+
+	struct UploadRecodContainerReply ReplyData;
+	
+	memset(&ReplyData, 0, sizeof(ReplyData));
+	memset(pBitMap, 0, sizeof(pBitMap));
+	memset(RecvData, 0, sizeof(RecvData));
+	memset(pTempBuf, 0, sizeof(pTempBuf));
+
+	char *pRecvData = "009760000000096021000000000210703E02810AD08213166216915800079754000000000000000090111094145903111925031119000000080009650031343539303333333039343030303230313532303831333035353130363431313130303031223033303530303030202020303330353635313020202031353600059F3602005800133600002400060000034355503039414238374542";
+
+	memcpy(pTempBuf, pRecvData, 4);
+ 	RecvLen = Convert_HexTOInt(pTempBuf, 4);
+	
+	if(RecvLen != (strlen(pRecvData)/2 -2))
+	{
+		printf("签到返回数据错误：长度不对！返回数据 : %d\n", RecvLen);
+	}
+
+	for(i=0; i<(2*RecvLen+4); i++)
+	{
+		RecvData[i]= toupper(*pRecvData++);
+	}
+	
+	memset(pTempBuf, 0, sizeof(pTempBuf));
+	memcpy(pTempBuf, RecvData+30 , 16);
+	GetBitMap(pTempBuf, pBitMap);
+	DebugPrintChar("位图表", pBitMap, 64);
+	
+	index += 46;
+	memcpy(pTempBuf, RecvData+index, 2);
+	index += 2;
+	TempInt = Convert_StrToInt(pTempBuf, 2);
+	DebugPrintf("银行卡长度 = %d\n", TempInt);
+	index += TempInt;		//BCD码一个字节表示两位
+
+	//03 	交易处理码	
+	index += 6;
+
+	//04	交易金额	
+	index += 12; 
+
+	//11 受卡方系统跟踪号
+	memset(pTempBuf, 0, sizeof(pTempBuf));
+	memcpy(pTempBuf, RecvData+index, 6);
+	DebugPrintf("受卡方系统跟踪号 = %s\n", pTempBuf);
+	index += 6;
+		
+	//12 受卡方所在地时间
+	index += 6;
+
+	//13 受卡方所在地日期
+	
+	index += 4;
+
+	//14 卡有效期
+	if(pBitMap[13] == 1)
+		index += 4;
+
+	//15 清算日期
+	memset(pTempBuf, 0, sizeof(pTempBuf));
+	memcpy(pTempBuf, RecvData+index, 4);
+	DebugPrintf("清算日期 = %s\n", pTempBuf);
+	index += 4;
+
+	//23 卡片序列号
+	if(pBitMap[22] == 1)
+	{
+		memset(pTempBuf, 0, sizeof(pTempBuf));
+		memcpy(pTempBuf, RecvData+index, 4);
+		DebugPrintf("清算日期 = %s\n", pTempBuf);
+		index += 4;
+	}
+
+	//25 服务点条件码
+	memset(pTempBuf, 0, sizeof(pTempBuf));
+	memcpy(pTempBuf, RecvData+index, 2);
+	DebugPrintf("清算日期 = %s\n", pTempBuf);
+	index += 2;
+	
+	//32 受理方标识码
+	memset(pTempBuf, 0, sizeof(pTempBuf));
+	memcpy(pTempBuf, RecvData+index, 10);
+	DebugPrintf("pTempBuf = %s\n", pTempBuf);
+	index += 2;
+	TempInt = Convert_StrToInt(pTempBuf, 2);
+	DebugPrintf("受理方标识码 = %d\n", TempInt);
+	index += TempInt;		//BCD码一个字节表示两位
+
+	//37 检索参考号
+	index += 24;
+
+	//39 应答码
+	TempInt = 0;
+	memset(pTempBuf, 0, sizeof(pTempBuf));
+	memcpy(pTempBuf, RecvData+index, 4);
+	DebugPrintf("应答码 = %s\n", pTempBuf);
+	
+	TempChar = Convert_HexTOInt(pTempBuf, 2);
+	TempInt = 10 * (TempChar - '0');
+
+	TempChar = Convert_HexTOInt(pTempBuf+2, 2);
+	TempInt = TempInt + (TempChar - '0');
+
+	ReplyData.ReplayCoade = TempInt;
+	DebugPrintf("ReplyData.ReplayCoade = %u\n", ReplyData.ReplayCoade);
+	index += 4;
+
+	//41 受卡机终端标识码
+	memcpy(ReplyData.AcceptDevID, RecvData+index, 16);
+	DebugPrintf("ReplyData.AcceptDevID = %s\n", ReplyData.AcceptDevID);
+	index += 16;
+	
+	//42 受卡方标识码
+	memcpy(ReplyData.AcceptOrganizationID, RecvData+index, 30);
+	DebugPrintf("ReplyData.AcceptOrganizationID = %s\n", ReplyData.AcceptOrganizationID);
+	index += 30;
+	
+	//44 附加响应数据
+	memcpy(pTempBuf, RecvData+index, 2);
+	index += 2;
+	TempInt = Convert_StrToInt(pTempBuf, 2);
+	DebugPrintf("附加响应数据长度 = %d\n", TempInt);
+	index += TempInt*2;		
+	//49 交易货币代码
+	index += 6;
+
+	//53 安全控制信息
+	if(pBitMap[52] == 1)
+	{
+		DebugPrintf("########################\n");
+		index += 16;
+	}
+	
+	//55 9F36 应用交易计数器
+	if(pBitMap[54] == 1)
+	{
+		memset(pTempBuf, 0, sizeof(pTempBuf));
+		memcpy(pTempBuf, RecvData+index, 10);
+		DebugPrintf("应用交易计数器 = %s\n", pTempBuf);
+		index += 4;
+		TempInt = Convert_StrToInt(pTempBuf, 4);
+		DebugPrintf("9F36 应用交易计数器 = %d\n", TempInt);
+		index += TempInt * 2;		//BCD码一个字节表示两位
+	}
+	
+	//60 自定义域
+	memset(pTempBuf, 0, sizeof(pTempBuf));
+	memcpy(pTempBuf, RecvData+index, 4);
+	DebugPrintf("自定义域 = %s\n", pTempBuf);
+	index += 4;
+	TempInt = Convert_StrToInt(pTempBuf, 4);
+	DebugPrintf("60 自定义域长度 = %d\n", TempInt);
+
+	//60.1 交易类型码
+	index += 2;
+
+	//60.2 批次号
+	index += 6;
+
+	//60.3网络管理码
+	index += 4;
+
+	//60.4终端读取能力
+	index += 1;
+	
+	//60.5基于PBOC借/贷记标准的IC卡条件代码
+	index += 1;
+
+	//63 自定义域
+	memset(pTempBuf, 0, sizeof(pTempBuf));
+	memcpy(pTempBuf, RecvData+index, 4);
+	DebugPrintf("63 自定义域 = %s\n", pTempBuf);
+	index += 4;
+	TempInt = Convert_StrToInt(pTempBuf, 4);
+	DebugPrintf("63 自定义域长度 = %d\n", TempInt);
+
+	//63.1 国际信用卡公司代码
+	index += 6;
+
+	//MAC
+	memcpy(ReplyData.UploadMAC, RecvData+index, 16);
+	DebugPrintf("ReplyData.UploadMAC = %s\n", ReplyData.UploadMAC);
+
+	return 0;
+}
+
+
+
+/* **********************************************
+ * 函数名:int BuildUploadData_55(void)
+ * 函数功能: 组建55域数据包
+ * 参数: len : 组包的长度
+ * 参数: buf : 组包的数据
+ ************************************************/
+int BuildUploadData_55(int *len, char *buf)
+{
+	DebugPrintf("*len = %d\n", *len);
+
+	
+	unsigned char data[512], TempBuf[64];
+	int index = 0;
+
+	memset(data, 0, sizeof(data));
+	
+	memset(TempBuf, 0, sizeof(TempBuf));	
+	strcat(TempBuf, "\x9F\x26");
+	memcpy(TempBuf + 2, TagData.Tag_9F26.buf, TagData.Tag_9F26.len);
+	index += TagData.Tag_9F26.len + 2;
+	strcat(data, TempBuf);
+
+	memset(TempBuf, 0, sizeof(TempBuf));
+	strcat(TempBuf, "\x9F\x27");
+	memcpy(TempBuf + 2, TagData.Tag_9F27.buf, TagData.Tag_9F27.len);
+	index += TagData.Tag_9F27.len + 2;
+	strcat(data, TempBuf);
+	
+	memset(TempBuf, 0, sizeof(TempBuf));
+	strcat(TempBuf, "\x9F\x10");
+	memcpy(TempBuf + 2, TagData.Tag_9F10.buf, TagData.Tag_9F10.len);
+	index += TagData.Tag_9F10.len + 2;
+	strcat(data, TempBuf);
+
+	memset(TempBuf, 0, sizeof(TempBuf));
+	strcat(TempBuf, "\x9F\x37");
+	memcpy(TempBuf + 2, TagData.Tag_9F37.buf, TagData.Tag_9F37.len);
+	index += TagData.Tag_9F37.len + 2;
+	strcat(data, TempBuf);
+
+	memset(TempBuf, 0, sizeof(TempBuf));	
+	strcat(TempBuf, "\x9F\x36");
+	memcpy(TempBuf + 2, TagData.Tag_9F36.buf, TagData.Tag_9F36.len);
+	index += TagData.Tag_9F36.len + 2;
+	strcat(data, TempBuf);
+
+	memset(TempBuf, 0, sizeof(TempBuf));
+	strcat(TempBuf, "\x95");
+	memcpy(TempBuf + 1, TagData.Tag_95.buf, TagData.Tag_95.len);
+	index += TagData.Tag_95.len + 1;
+	strcat(data, TempBuf);
+	
+	memset(TempBuf, 0, sizeof(TempBuf));
+	strcat(TempBuf, "\x9A");
+	memcpy(TempBuf + 1, TagData.Tag_9A.buf, TagData.Tag_9A.len);
+	index += TagData.Tag_9A.len + 1;
+	strcat(data, TempBuf);
+
+	memset(TempBuf, 0, sizeof(TempBuf));
+	strcat(TempBuf, "\x9C");
+	memcpy(TempBuf + 1, TagData.Tag_9C.buf, TagData.Tag_9C.len);
+	index += TagData.Tag_9C.len + 1;
+	strcat(data, TempBuf);
+
+	memset(TempBuf, 0, sizeof(TempBuf));
+	strcat(TempBuf, "\x9F\x02");
+	memcpy(TempBuf + 2, TagData.Tag_9F02.buf, TagData.Tag_9F02.len);
+	index += TagData.Tag_9F02.len + 2;
+	strcat(data, TempBuf);
+
+	memset(TempBuf, 0, sizeof(TempBuf));
+	strcat(TempBuf, "\x82");
+	memcpy(TempBuf + 1, TagData.Tag_82.buf, TagData.Tag_82.len);
+	index += TagData.Tag_82.len + 1;
+	strcat(data, TempBuf);
+
+	memset(TempBuf, 0, sizeof(TempBuf));
+	strcat(TempBuf, "\x9F\x1A");
+	memcpy(TempBuf + 2, TagData.Tag_9F1A.buf, TagData.Tag_9F1A.len);
+	index += TagData.Tag_9F1A.len + 2;
+	strcat(data, TempBuf);
+
+	memset(TempBuf, 0, sizeof(TempBuf));
+	strcat(TempBuf, "\x9F\x03");
+	memcpy(TempBuf + 2, TagData.Tag_9F03.buf, TagData.Tag_9F03.len);
+	index += TagData.Tag_9F03.len + 2;
+	strcat(data, TempBuf);
+
+	memset(TempBuf, 0, sizeof(TempBuf));
+	strcat(TempBuf, "\x9F\x33");
+	memcpy(TempBuf + 2, TagData.Tag_9F33.buf, TagData.Tag_9F33.len);
+	index += TagData.Tag_9F33.len + 2;
+	strcat(data, TempBuf);
+
+	memset(TempBuf, 0, sizeof(TempBuf));	
+	strcat(TempBuf, "\x9F\x35");
+	memcpy(TempBuf + 2, TagData.Tag_9F35.buf, TagData.Tag_9F35.len);
+	index += TagData.Tag_9F35.len + 2;
+	strcat(data, TempBuf);
+
+	memset(TempBuf, 0, sizeof(TempBuf));
+	strcat(TempBuf, "\x9F\x1E");
+	memcpy(TempBuf + 2, TagData.Tag_9F1E.buf, TagData.Tag_9F1E.len);
+	index += TagData.Tag_9F1E.len + 2;
+	strcat(data, TempBuf);
+
+	memset(TempBuf, 0, sizeof(TempBuf));
+	strcat(TempBuf, "\x8A");
+	memcpy(TempBuf + 1, TagData.Tag_8A.buf, TagData.Tag_8A.len);
+	index += TagData.Tag_8A.len + 1;
+	strcat(data, TempBuf);
+
+	memset(TempBuf, 0, sizeof(TempBuf));
+	strcat(TempBuf, "\x9F\x74");
+	memcpy(TempBuf + 2, TagData.Tag_9F74.buf, TagData.Tag_9F74.len);
+	index += TagData.Tag_9F74.len + 2;
+	strcat(data, TempBuf);
+
+	//EMV里面没有这个数据,需要添加上去
+	memset(TempBuf, 0, sizeof(TempBuf));
+	strcat(TempBuf, "\x9F\x63");
+	memcpy(TempBuf + 2, TagData.Tag_9F63.buf, TagData.Tag_9F63.len);
+	index += TagData.Tag_9F63.len + 2;
+	strcat(data, TempBuf);
+	
+	*len = index;
+	DebugPrintf("index = %d\n", index);
+	memcpy(buf, data, *len);
+	
+	DebugPrintChar("data", data, *len);
+	return 0;
+}
+
+
+/* **********************************************
+ * 函数名:int BuildUploadData_66(void)
+ * 函数功能: 组建60域数据包
+ * 参数: len : 组包的长度
+ * 参数: buf : 组包的数据
+ ************************************************/
+int BuildUploadData_60(int *len, char *buf)
+{
+	unsigned char data[256], TempBuf[64];
+	int index = 0;
+	DebugPrintf("index = %d\n", index);
+	//自定义包的长度
+	data[index] = 0x00;
+	data[index + 1] = 0x13;
+	index += 2;
+
+	DebugPrintf("index = %d\n", index);
+	
+	//60.1	交易类型码		2
+	data[index] = 0x36;
+	index += 1;
+
+	//60.2	批次号
+	memcpy(data+index, UploadData.BatchCode, 3);
+	index += 3;
+
+	//60.3	网络管理码
+	data[index] = 0x00;
+	data[index + 1] = 0x06;
+	index += 2;
+
+	//60.4	终端读取能力
+	//60.5	基于PBOC借/贷记标准的IC卡条件代码
+	data[index] = 0x00;
+	index += 1;
+
+	DebugPrintf("index = %d\n", index);
+
+	*len = index;
+	memcpy(buf, data, index);
+	
+	return 0;
+}
+
+
+/* **********************************************
+ * 函数名:int BuildUploadData_59(void)		陕西信合
+ * 函数功能: 组建59域数据包
+ * 参数: len : 组包的长度
+ * 参数: buf : 组包的数据
+ ************************************************/
+int BuildUploadData_59(int *len, char *buf)
+{
+	/* 9域数据结构【2B域长度+1B 字母"V"+2B机器号+14B程序版本+7B上笔交易时间 +15B机器号】 */
+	unsigned char data[256], TempBuf[64];
+	int index = 0;
+	DebugPrintf("index = %d\n", index);
+
+	//自定义包的长度
+	data[index] = 0x00;
+	data[index + 1] = 0x24;
+	index += 2;
+
+	// 字母 "V"
+	data[index] = 'V';
+	index += 1;
+
+	// 机器号
+	data[index] = '1';
+	data[index + 1] = '1';
+	index += 2;
+
+	//程序版本
+	memset(TempBuf, 0, sizeof(TempBuf));
+	sprintf(TempBuf, "%s", VERSION_NUMB);
+	memcpy(data+index, TempBuf, 14);
+	index += 14;
+
+	//上笔交易时间
+	memset(TempBuf, 0, sizeof(TempBuf));
+	TempBuf[0] = 0x20;
+	memcpy(TempBuf+1, CardLan.OldTime, 6);
+	memcpy(data+index, TempBuf, 7);
+	index += 7;
+		
+	*len = index;
+	memcpy(buf, data, index);
+
+	return 0;
+}
+
+/* **********************************************
+ * 函数名:int GetUploadMac(int *len, char *buf)
+ * 函数功能: 组建66域数据包
+ * 参数: len : 组包的长度
+ * 参数: buf : 组包的数据
+ ************************************************/
+ 
+int GetUploadMac(char *DataBuf, int DataLen)
+{
+	//char *pStrUploadData = "123456789123456789123456789jiaoyin123456789123456789123456789jiaoyin123456789123456789123456789jiaoyin";
+	char *pStrUploadData = "123456789123456789";
+	char *pStrKey = "cardlan";
+	int UploadDataLen = strlen(pStrUploadData);
+	char TempBuf[128];
+	int TempInt = 0, MabInt = 0, i, MabCount = 0;
+
+	unsigned char pDataBuf[1024], TempMacBuf[9], ResultMabBuf[9], MacBuf_HEX[16];
+	int pDataLen = 0;
+
+	memset(TempBuf, 0, sizeof(TempBuf));
+	memset(pDataBuf, 0, sizeof(pDataBuf));
+
+	for(i=0; i<UploadDataLen; i++)
+	{
+		pDataBuf[i] = *(pStrUploadData+i);
+		pDataLen++;
+	}
+	
+	DebugPrintf("pDataBuf = %s\t pDataLen = %d\n", pDataBuf, pDataLen);
+
+	/* 1.首先组建MAB，就是对8个字节取整 */
+	//TempInt = UploadDataLen / 2;
+	MabInt = 8 - (UploadDataLen % 8);
+	DebugPrintf("MabInt = %d pDataLen = %d\n", MabInt, pDataLen);
+	if (MabInt < 8)
+	{
+		for (i = 0; i < MabInt; i++)
+		{
+		    pDataBuf[pDataLen++] = 0x00;
+		}
+	}
+	
+	DebugPrintf("pDataBuf = %s\t pDataLen = %d\n", pDataBuf, pDataLen);
+
+	/* 2.对MAB，按每8个字节做异或 */
+	memset(ResultMabBuf, 0, sizeof(ResultMabBuf));
+	memcpy(ResultMabBuf, pDataBuf, 8);
+	DebugPrintf("TempMacBuf = %s\n", ResultMabBuf);
+	while(1)
+	{
+		MabCount++;
+		memcpy(TempMacBuf, pDataBuf+8*MabCount, 8);
+		DebugPrintf("TempMacBuf = %s\n", TempMacBuf);
+		for(i=0; i<8; i++)
+		{
+			ResultMabBuf[i] = ResultMabBuf[i]^TempMacBuf[i];
+		}
+		
+		if((8 * (MabCount+1)) >= pDataLen)
+		{
+			break;
+		}
+	}
+	
+	/* 3.将异或运算后的最后8个字节（RESULT BLOCK）转换成16 个HEXDECIMAL */
+	for (i = 0; i < 8; i++)
+	{
+		sprintf(MacBuf_HEX + 2*i, "%02X", (unsigned char)ResultMabBuf[i]);
+	}
+	
+	/* 4.取前8个字节用MAK加密 */
+	memcpy(TempMacBuf, MacBuf_HEX, 8);
+	DebugPrintf("PbocKey.DecryptKey = %s\n", PbocKey.DecryptKey);
+	DebugPrintChar("PbocKey.DecryptKey", PbocKey.DecryptKey, 8);
+	PbocDecrypt_DES(TempMacBuf, 8, ResultMabBuf, &MabInt, PbocKey.DecryptKey);
+
+	/* 5.将加密后的结果与后8个字节异或 */
+	memcpy(TempMacBuf, MacBuf_HEX+8, 8);
+	for(i=0; i<8; i++)
+	{
+		ResultMabBuf[i] = ResultMabBuf[i]^TempMacBuf[i];
+	}
+
+	/* 6.用异或的结果TEMP BLOCK再进行一次单倍长密钥算法运算 */
+	PbocDecrypt_DES(ResultMabBuf, 8, TempMacBuf, &MabInt, PbocKey.DecryptKey);
+
+	/* 7. 将运算后的结果（ENC BLOCK2）转换成16个HEXDECIMAL   */
+	for (i = 0; i < 8; i++)
+	{
+		sprintf(MacBuf_HEX + 2*i, "%02X", (unsigned char)TempMacBuf[i]);
+	}
+
+	memcpy(UploadData.UploadMac, MacBuf_HEX, 8);
+	DebugPrintf("UploadData.UploadMac = %s\n", UploadData.UploadMac);
+	return 0;
+}
+
+
+
+int BuildConsumeData(unsigned char *data)
+{
+ 	//unsigned char data[1024];
+	unsigned char bitmap[8], TempBuf[256], BcdBuf[16];
+	int index = 0, istart = 0, bitMapPos = 0;
+	int Tempint = 0;
+
+	//memset(data, 0, sizeof(data));
+	memset(BcdBuf, 0, sizeof(BcdBuf));
+	memset(bitmap, 0, sizeof(bitmap));
+	memset(&TagData, 0, sizeof(struct PbocTagContainer));
+
+
+	data[index] = 0x60;
+	data[index + 1] = 0x00;//正式
+	data[index + 2] = 0x09;
+	data[index + 3] = 0x00;
+	data[index + 4] = 0x00;
+	index += 5;
+
+	//报文头：应用类别 1	5
+	data[index] = 0x60;		//0x61;
+	index += 1;
+
+	//报文头：软件版本号 1	6
+	data[index] = 0x21;		//0x22;
+	index += 1;
+
+	//报文头：终端状态和处理要求 00		7
+	data[index] = 0x00;		
+	index += 1;
+
+	//报文头：保留 3 	10
+	data[index] = 0x00;			//0x31;
+	data[index + 1] = 0x00;		//0x12;
+	data[index + 2] = 0x00;		//0x03;
+	index += 3;
+
+	//消息类型		12
+	data[index] = 0x02;
+	data[index + 1] = 0x00;
+	index += 2;
+	
+ 	istart = index;
+	SetBitMap(bitmap, 2);
+
+	bitMapPos = index;
+	index += 8;					//这里是存放位元表的		20
+
+	data[index] = 0x19;
+	index += 1;
+
+	//将57标签的前面一直到D停止的数据拷贝到这里去，这个就是银行卡号		21
+	//57 13  62 30 65 00 00 60 00 01 72 1D 25 12 22 00 00 00  16 10 0F 
+	memcpy(data+index, TagData.Tag_57.buf, TagData.Tag_57.len);
+	index += 10;
+
+	//03 交易处理码		31
+	SetBitMap(bitmap, 3);
+	data[index] = 0x00;
+	data[index + 1] = 0x00;
+	data[index + 2] = 0x00;
+	index += 3;
+
+	//04	交易金额	34	
+	SetBitMap(bitmap, 4);
+	memcpy(data+index, UploadData.TradeSum, 6);
+	index += 6;
+
+	//11	受卡方系统跟踪号	40
+	SetBitMap(bitmap, 11);
+	memcpy(data+index, UploadData.AuditNum, 3);
+	index += 3;
+
+	//14 	卡有效期	43
+	SetBitMap(bitmap, 14);
+	memcpy(data+index, UploadData.AvailableData, 2);
+	index += 2;
+
+	//22 	 服务点输入方式码	45
+	SetBitMap( bitmap, 22);
+	data[index] = 0x07;
+	data[index + 1] = 0x20;
+	index += 2;
+
+	//23	卡片序列号		47
+	SetBitMap(bitmap, 23);
+	data[index] = 0x00;
+	data[index + 1] = 0x00;	
+	index += 2;
+
+	//25 	服务点条件码	49
+	SetBitMap( bitmap, 25);
+	data[index] = 0x00;
+	index += 1;
+
+	//41	受卡机终端标识码	50
+	SetBitMap( bitmap, 41);
+
+	memcpy(data+index, UploadData.AcceptDevID, 8);
+	index += 8;
+
+	//42	受卡方标识码	58
+	SetBitMap( bitmap, 42);
+	memcpy(data+index, UploadData.AcceptOrganizationID, 15);
+	index += 15;
+
+	//49 交易货币代码
+	SetBitMap( bitmap, 49);
+	memcpy(data+index, UploadData.MoneyType, 3);
+	index += 3;
+	
+
+	//55	IC卡数据域,包含多个子域,自定义长度		
+	/* Tempint 后面取出来之后需要转换成BCD码表示 */
+	SetBitMap( bitmap, 55);
+
+	memset(TempBuf, 0, sizeof(TempBuf));
+	BuildUploadData_55(&Tempint, TempBuf);
+	DebugPrintf("Tempint = %d\n", Tempint);
+	
+	Convert_IntTOBcd(Tempint, BcdBuf);
+
+	DebugPrintf("index = %d\n", index);
+	memcpy(data+index, BcdBuf, 2);
+	index += 2;
+	DebugPrintf("index = %d\n", index);
+
+	memcpy(data+index, TempBuf, Tempint);
+	index += Tempint;
+	DebugPrintChar("TagData", &TagData, 10);
+
+	//59	这里是处理客户定制的功能，这里是客户定制的功能
+	SetBitMap( bitmap, 59);
+	memset(TempBuf, 0, sizeof(TempBuf));
+	BuildUploadData_59(&Tempint, TempBuf);
+	memcpy(data+index, TempBuf, Tempint);
+	index += Tempint;
+
+	//60 	自定义域	
+	SetBitMap( bitmap, 60);
+	memset(TempBuf, 0, sizeof(TempBuf));
+	BuildUploadData_60(&Tempint, TempBuf);
+	memcpy(data+index, TempBuf, Tempint);
+	index += Tempint;
+
+	//63	自定义域
+	SetBitMap(bitmap, 63);
+	data[index] = 0x00;
+	data[index + 1] = 0x03;
+	index += 2;
+	
+	memcpy(data+index, UploadData.CreditCompanyCode, 3);
+	index += 3;
+
+	DebugPrintf("index = %d  strlen(data) = %d\n", index, strlen(data));
+
+	//64 	通过秘钥计算得到的mac
+	GetUploadMac(data, index-istart);
+	SetBitMap(bitmap, 64);
+	memset(TempBuf, 0, sizeof(TempBuf));
+	memcpy(data+index, UploadData.UploadMac, 8);
+	index += 8;
+	
+	//把位图表的信息赋值进来
+	memcpy(data+bitMapPos, bitmap, 8);
+	
+	DebugPrintChar("data", data, index);
+	
+	return 0;
+}
+
+
+
+int BuildSettleInfo(unsigned char *data)
+{
+	char bitmap[8], tempBuf[32];
+	//unsigned char data[1024];
+	int index=0, TempInt = 0, pBitMapLocation = 0;
+	
+	//memset(data, 0, sizeof(data));
+	memset(bitmap, 0, sizeof(bitmap));
+	memset(tempBuf, 0, sizeof(tempBuf));
+
+    data[index] = 0x60;
+    data[index + 1] = 0x00;//正式
+    data[index + 2] = 0x09;
+    data[index + 3] = 0x00;
+    data[index + 4] = 0x00;
+    index += 5;
+
+    //报文头：应用类别 1
+    data[index] = 0x60;
+    index += 1;
+	
+    //报文头：软件版本号 1
+    data[index] = 0x21;// 0x31;
+    index += 1;
+
+    //报文头：终端状态和处理要求 00
+    data[index] = 0x00;
+    index += 1;
+
+    //报文头：保留 3 
+    data[index] = 0x00;
+    data[index + 1] = 0x00;
+    data[index + 2] = 0x00;
+	index += 3;
+
+	//消息类型
+	data[index] = 0x05;
+	data[index + 1] = 0x00;
+	index += 2;
+
+	//位元表
+	pBitMapLocation = index;
+	index += 8;
+
+	//11 受卡方系统跟踪号
+	SetBitMap(bitmap, 11);
+	memcpy(data+index, SettleData.strSernialNo, 3);
+	index += 3;
+	
+	//41 受卡机终端标识码(终端代码)
+	SetBitMap(bitmap, 41);
+	memcpy(data+index, SettleData.AcceptDevID, 8);
+	index += 8;
+		
+	//42 受卡方标识码(商户代码) 
+	SetBitMap(bitmap, 42);
+	memcpy(data+index, SettleData.AcceptOrganizationID, 16);
+	index += 15;
+
+	//48 附加数据
+	SetBitMap(bitmap, 48);	
+	TempInt += 0;
+	memcpy(data+index, SettleData.PrivateData, 16);
+	index += TempInt;
+	
+	//49 交易货币代码
+	SetBitMap(bitmap, 49);
+	memcpy(data+index, SettleData.MoneyType, 3);
+	index += 3;
+
+	//60 自定义域
+	SetBitMap(bitmap, 60);	
+	memcpy(data+index, SettleData.CustomLen_60, 2);
+	index += 2;
+
+	//60.1 交易类型码
+	data[index] = 0x00;
+	index += 1;
+	
+	//60.2	批次号	
+	memcpy(data+index, SettleData.BatchCode, 3);
+	index += 3;
+
+	//60.3 网络管理信息码
+	memcpy(data+index, SettleData.NetManageCode, 2);
+	index += 2;
+
+    SetBitMap(bitmap, 63);
+    data[index] = 0x00;
+    data[index + 1] = 0x03;	
+    index += 2;
+	//DebugPrintChar("DATA", data, index);
+	//63.1 操作员代码
+	memcpy(data+index, SettleData.OperCode, 3);
+	index += 3;
+	
+	DebugPrintChar("strSernialNo", SettleData.strSernialNo, 3);
+	DebugPrintChar("AcceptDevID", SettleData.AcceptDevID, 3);
+	DebugPrintChar("AcceptOrganizationID", SettleData.AcceptOrganizationID, 3);
+	DebugPrintChar("PrivateData", SettleData.PrivateData, 3);
+	DebugPrintChar("MoneyType", SettleData.MoneyType, 3);
+	DebugPrintChar("CustomLen_60", SettleData.CustomLen_60, 3);
+	DebugPrintChar("BatchCode", SettleData.BatchCode, 3);
+	DebugPrintChar("NetManageCode", SettleData.NetManageCode, 3);
+	DebugPrintChar("OperCode", SettleData.OperCode, 3);
+
+	memcpy(data+pBitMapLocation, bitmap, 8);
+
+	DebugPrintChar("DATA", data, index);
+
+	return 0;
+}
+
+int YUNNAN_BuildUploadData_55(int *len, char *buf)
+{
+	DebugPrintf("*len = %d\n", *len);
+	unsigned char data[512], TempBuf[64];
+	int index = 0;
+
+	memset(data, 0, sizeof(data));
+	
+	memset(TempBuf, 0, sizeof(TempBuf));	
+	strcat(TempBuf, "\x9F\x1E");
+	memcpy(TempBuf + 2, TagData.Tag_9F26.buf, TagData.Tag_9F26.len);
+	index += TagData.Tag_9F26.len + 2;
+	strcat(data, TempBuf);
+
+	memset(TempBuf, 0, sizeof(TempBuf));
+	strcat(TempBuf, "\x9F\x10");
+	memcpy(TempBuf + 2, TagData.Tag_9F27.buf, TagData.Tag_9F27.len);
+	index += TagData.Tag_9F27.len + 2;
+	strcat(data, TempBuf);
+	
+	memset(TempBuf, 0, sizeof(TempBuf));
+	strcat(TempBuf, "\xDF\x31");
+	memcpy(TempBuf + 2, TagData.Tag_9F10.buf, TagData.Tag_9F10.len);
+	index += TagData.Tag_9F10.len + 2;
+	strcat(data, TempBuf);
+
+	memset(TempBuf, 0, sizeof(TempBuf));
+	strcat(TempBuf, "\xDF\x32");
+	memcpy(TempBuf + 2, TagData.Tag_9F37.buf, TagData.Tag_9F37.len);
+	index += TagData.Tag_9F37.len + 2;
+	strcat(data, TempBuf);
+
+	memset(TempBuf, 0, sizeof(TempBuf));	
+	strcat(TempBuf, "\xDF\x33");
+	memcpy(TempBuf + 2, TagData.Tag_9F36.buf, TagData.Tag_9F36.len);
+	index += TagData.Tag_9F36.len + 2;
+	strcat(data, TempBuf);
+
+	memset(TempBuf, 0, sizeof(TempBuf));
+	strcat(TempBuf, "\xDF\x34");
+	memcpy(TempBuf + 2, TagData.Tag_9F02.buf, TagData.Tag_9F02.len);
+	index += TagData.Tag_9F02.len + 2;
+	strcat(data, TempBuf);
+
+	*len = index;
+	DebugPrintf("index = %d\n", index);
+	memcpy(buf, data, *len);
+	
+	DebugPrintChar("data", data, *len);
+	return 0;
+}
+
+
+int YUNNAN_BuildConsumeCorrectMsg(unsigned char *data)
+{
+ 	//unsigned char data[1024];
+	unsigned char bitmap[8], TempBuf[256], BcdBuf[16];
+	int index = 0, istart = 0, bitMapPos = 0;
+	int Tempint = 0;
+
+	//memset(data, 0, sizeof(data));
+	memset(BcdBuf, 0, sizeof(BcdBuf));
+	memset(bitmap, 0, sizeof(bitmap));
+	memset(&TagData, 0, sizeof(struct PbocTagContainer));
+
+
+	data[index] = 0x60;
+	data[index + 1] = 0x00;//正式
+	data[index + 2] = 0x09;
+	data[index + 3] = 0x00;
+	data[index + 4] = 0x00;
+	index += 5;
+
+	//报文头：应用类别 1	5
+	data[index] = 0x60;		//0x61;
+	index += 1;
+
+	//报文头：软件版本号 1	6
+	data[index] = 0x21;		//0x22;
+	index += 1;
+
+	//报文头：终端状态和处理要求 00		7
+	data[index] = 0x00;		
+	index += 1;
+
+	//报文头：保留 3 	10
+	data[index] = 0x00;			//0x31;
+	data[index + 1] = 0x00;		//0x12;
+	data[index + 2] = 0x00;		//0x03;
+	index += 3;
+
+	//消息类型		12
+	data[index] = 0x02;
+	data[index + 1] = 0x00;
+	index += 2;
+	
+ 	istart = index;
+	SetBitMap(bitmap, 2);
+
+	bitMapPos = index;
+	index += 8;					//这里是存放位元表的		20
+
+	data[index] = 0x19;
+	index += 1;
+
+	//将57标签的前面一直到D停止的数据拷贝到这里去，这个就是银行卡号		21
+	//57 13  62 30 65 00 00 60 00 01 72 1D 25 12 22 00 00 00  16 10 0F 
+	memcpy(data+index, TagData.Tag_57.buf, TagData.Tag_57.len);
+	index += 10;
+
+	//03 交易处理码		31
+	SetBitMap(bitmap, 3);
+	data[index] = 0x00;
+	data[index + 1] = 0x00;
+	data[index + 2] = 0x00;
+	index += 3;
+
+	//04	交易金额	34	
+	SetBitMap(bitmap, 4);
+	memcpy(data+index, UploadData.TradeSum, 6);
+	index += 6;
+
+	//11	受卡方系统跟踪号	40
+	SetBitMap(bitmap, 11);
+	memcpy(data+index, UploadData.AuditNum, 3);
+	index += 3;
+
+	//14 	卡有效期	43
+	SetBitMap(bitmap, 14);
+	memcpy(data+index, UploadData.AvailableData, 2);
+	index += 2;
+
+	//22 	 服务点输入方式码	45
+	SetBitMap( bitmap, 22);
+	data[index] = 0x07;
+	data[index + 1] = 0x20;
+	index += 2;
+
+	//23	卡片序列号		47
+	SetBitMap(bitmap, 23);
+	data[index] = 0x00;
+	data[index + 1] = 0x00;	
+	index += 2;
+
+	//25 	服务点条件码	49
+	SetBitMap( bitmap, 25);
+	data[index] = 0x00;
+	index += 1;
+
+	//39	应答码 	51
+	SetBitMap( bitmap, 41);
+	memcpy(data+index, UploadData.AcceptDevID, 8);
+	index += 8;
+
+	//41	受卡机终端标识码	53
+	SetBitMap( bitmap, 41);
+	memcpy(data+index, UploadData.AcceptDevID, 8);
+	index += 8;
+
+
+	//42	受卡方标识码	59
+	SetBitMap( bitmap, 42);
+	memcpy(data+index, UploadData.AcceptOrganizationID, 15);
+	index += 15;
+
+	//49 交易货币代码
+	SetBitMap( bitmap, 49);
+	memcpy(data+index, UploadData.MoneyType, 3);
+	index += 3;
+	
+
+	//55	IC卡数据域,包含多个子域,自定义长度		
+	/* Tempint 后面取出来之后需要转换成BCD码表示 */
+	SetBitMap( bitmap, 55);
+
+	memset(TempBuf, 0, sizeof(TempBuf));
+	YUNNAN_BuildUploadData_55(&Tempint, TempBuf);
+	DebugPrintf("Tempint = %d\n", Tempint);
+	
+	Convert_IntTOBcd(Tempint, BcdBuf);
+
+	DebugPrintf("index = %d\n", index);
+	memcpy(data+index, BcdBuf, 2);
+	index += 2;
+	DebugPrintf("index = %d\n", index);
+
+	memcpy(data+index, TempBuf, Tempint);
+	index += Tempint;
+	DebugPrintChar("TagData", &TagData, 10);
+
+	//59	这里是处理客户定制的功能，这里是客户定制的功能
+#if 0
+	SetBitMap( bitmap, 59);
+	memset(TempBuf, 0, sizeof(TempBuf));
+	BuildUploadData_59(&Tempint, TempBuf);
+	memcpy(data+index, TempBuf, Tempint);
+	index += Tempint;
+#endif
+
+	//60 	自定义域	
+	SetBitMap( bitmap, 60);
+	memset(TempBuf, 0, sizeof(TempBuf));
+	BuildUploadData_60(&Tempint, TempBuf);
+	memcpy(data+index, TempBuf, Tempint);
+	index += Tempint;
+
+	//63	自定义域
+	SetBitMap(bitmap, 63);
+	data[index] = 0x00;
+	data[index + 1] = 0x03;
+	index += 2;
+	
+	memcpy(data+index, UploadData.CreditCompanyCode, 3);
+	index += 3;
+
+	DebugPrintf("index = %d  strlen(data) = %d\n", index, strlen(data));
+
+	//64 	通过秘钥计算得到的mac
+	GetUploadMac(data, index-istart);
+	SetBitMap(bitmap, 64);
+	memset(TempBuf, 0, sizeof(TempBuf));
+	memcpy(data+index, UploadData.UploadMac, 8);
+	index += 8;
+	
+	//把位图表的信息赋值进来
+	memcpy(data+bitMapPos, bitmap, 8);
+	
+	DebugPrintChar("data", data, index);
+	
+	return 0;
+}
+
+int YUNNAN_BuildConsumeMsg(unsigned char * data)
+{
+ 	//unsigned char data[1024];
+	unsigned char bitmap[8], TempBuf[256], BcdBuf[16];
+	int index = 0, istart = 0, bitMapPos = 0;
+	int Tempint = 0;
+
+	//memset(data, 0, sizeof(data));
+	memset(BcdBuf, 0, sizeof(BcdBuf));
+	memset(bitmap, 0, sizeof(bitmap));
+	memset(&TagData, 0, sizeof(struct PbocTagContainer));
+
+
+	data[index] = 0x60;
+	data[index + 1] = 0x00;//正式
+	data[index + 2] = 0x09;
+	data[index + 3] = 0x00;
+	data[index + 4] = 0x00;
+	index += 5;
+
+	//报文头：应用类别 1	5
+	data[index] = 0x60;		//0x61;
+	index += 1;
+
+	//报文头：软件版本号 1	6
+	data[index] = 0x21;		//0x22;
+	index += 1;
+
+	//报文头：终端状态和处理要求 00		7
+	data[index] = 0x00;		
+	index += 1;
+
+	//报文头：保留 3 	10
+	data[index] = 0x00;			//0x31;
+	data[index + 1] = 0x00;		//0x12;
+	data[index + 2] = 0x00;		//0x03;
+	index += 3;
+
+	//消息类型		12
+	data[index] = 0x02;
+	data[index + 1] = 0x00;
+	index += 2;
+	
+ 	istart = index;
+	SetBitMap(bitmap, 2);
+
+	bitMapPos = index;
+	index += 8;					//这里是存放位元表的		20
+
+	data[index] = 0x19;
+	index += 1;
+
+	//将57标签的前面一直到D停止的数据拷贝到这里去，这个就是银行卡号		21
+	//57 13  62 30 65 00 00 60 00 01 72 1D 25 12 22 00 00 00  16 10 0F 
+	memcpy(data+index, TagData.Tag_57.buf, TagData.Tag_57.len);
+	index += 10;
+
+	//03 交易处理码		31
+	SetBitMap(bitmap, 3);
+	data[index] = 0x00;
+	data[index + 1] = 0x00;
+	data[index + 2] = 0x00;
+	index += 3;
+
+	//04	交易金额	34	
+	SetBitMap(bitmap, 4);
+	memcpy(data+index, UploadData.TradeSum, 6);
+	index += 6;
+
+	//11	受卡方系统跟踪号	40
+	SetBitMap(bitmap, 11);
+	memcpy(data+index, UploadData.AuditNum, 3);
+	index += 3;
+
+	//14 	卡有效期	43
+	SetBitMap(bitmap, 14);
+	memcpy(data+index, UploadData.AvailableData, 2);
+	index += 2;
+
+	//22 	 服务点输入方式码	45
+	SetBitMap( bitmap, 22);
+	data[index] = 0x07;
+	data[index + 1] = 0x20;
+	index += 2;
+
+	//23	卡片序列号		47
+	SetBitMap(bitmap, 23);
+	data[index] = 0x00;
+	data[index + 1] = 0x00;	
+	index += 2;
+
+	//25 	服务点条件码	49
+	SetBitMap( bitmap, 25);
+	data[index] = 0x00;
+	index += 1;
+
+	//41	受卡机终端标识码	50
+	SetBitMap( bitmap, 41);
+
+	memcpy(data+index, UploadData.AcceptDevID, 8);
+	index += 8;
+
+	//42	受卡方标识码	58
+	SetBitMap( bitmap, 42);
+	memcpy(data+index, UploadData.AcceptOrganizationID, 15);
+	index += 15;
+
+	//49 交易货币代码
+	SetBitMap( bitmap, 49);
+	memcpy(data+index, UploadData.MoneyType, 3);
+	index += 3;
+	
+
+	//55	IC卡数据域,包含多个子域,自定义长度		
+	/* Tempint 后面取出来之后需要转换成BCD码表示 */
+	SetBitMap( bitmap, 55);
+
+	memset(TempBuf, 0, sizeof(TempBuf));
+	BuildUploadData_55(&Tempint, TempBuf);
+	DebugPrintf("Tempint = %d\n", Tempint);
+	
+	Convert_IntTOBcd(Tempint, BcdBuf);
+
+	DebugPrintf("index = %d\n", index);
+	memcpy(data+index, BcdBuf, 2);
+	index += 2;
+	DebugPrintf("index = %d\n", index);
+
+	memcpy(data+index, TempBuf, Tempint);
+	index += Tempint;
+	DebugPrintChar("TagData", &TagData, 10);
+
+	//59	这里是处理客户定制的功能，这里是客户定制的功能
+#if 0
+	SetBitMap( bitmap, 59);
+	memset(TempBuf, 0, sizeof(TempBuf));
+	BuildUploadData_59(&Tempint, TempBuf);
+	memcpy(data+index, TempBuf, Tempint);
+	index += Tempint;
+#endif
+
+	//60 	自定义域	
+	SetBitMap( bitmap, 60);
+	memset(TempBuf, 0, sizeof(TempBuf));
+	BuildUploadData_60(&Tempint, TempBuf);
+	memcpy(data+index, TempBuf, Tempint);
+	index += Tempint;
+
+	//63	自定义域
+	SetBitMap(bitmap, 63);
+	data[index] = 0x00;
+	data[index + 1] = 0x03;
+	index += 2;
+	
+	memcpy(data+index, UploadData.CreditCompanyCode, 3);
+	index += 3;
+
+	DebugPrintf("index = %d  strlen(data) = %d\n", index, strlen(data));
+
+	//64 	通过秘钥计算得到的mac
+	GetUploadMac(data, index-istart);
+	SetBitMap(bitmap, 64);
+	memset(TempBuf, 0, sizeof(TempBuf));
+	memcpy(data+index, UploadData.UploadMac, 8);
+	index += 8;
+	
+	//把位图表的信息赋值进来
+	memcpy(data+bitMapPos, bitmap, 8);
+	
+	DebugPrintChar("data", data, index);
+	
+	return 0;
+}
+
+
+
+int HandelBatchSett(char *str)
+{
+	int RecvLen = 0, i=0, j=0;
+	int index = 0, TempInt = 0;
+	unsigned char pTempBuf[128], pBitMap[64];
+	unsigned char RecvData[1024];
+
+	struct SignContainerReply SignData;
+	
+	memset(&SignData, 0, sizeof(SignData));
+	memset(pBitMap, 0, sizeof(pBitMap));
+	memset(RecvData, 0, sizeof(RecvData));
+	memset(pTempBuf, 0, sizeof(pTempBuf));
+	
+	char * pStr = "007860000000096021000000000510003A000108C18012000009122424031903190800096500313232343234363130373630323031303033343339353235313036343131313030303100620000000545603470000000000000002000000000000000000000000000000131353600110000231920100003303031";
+	memcpy(pTempBuf, pStr, 4);
+ 	RecvLen = Convert_HexTOInt(pTempBuf, 4);
+	
+	if(RecvLen != (strlen(pStr)/2 -2))
+	{
+		printf("签到返回数据错误：长度不对！返回数据 : %d\n", RecvLen);
+	}
+
+	for(i=0; i<(2*RecvLen+4); i++)
+	{
+		RecvData[i]= toupper(*pStr++);
+	}
+
+	index += 30;
+	 
+	memset(pTempBuf, 0, sizeof(pTempBuf));
+	memcpy(pTempBuf, RecvData+30 , 16);
+	GetBitMap(pTempBuf, pBitMap);
+    index += 16;
+
+    //11 受卡方系统跟踪号
+    index += 6;
+
+	//12 受卡方所在地时间
+	index += 6;
+
+	//13 受卡方所在地日期
+	index += 4;
+
+	//15 清算日期
+	index += 4;
+
+	//32 受理方标识码
+	memset(pTempBuf, 0, sizeof(pTempBuf));
+	memcpy(pTempBuf, RecvData+index, 12);
+	DebugPrintf("pTempBuf = %s\n", pTempBuf);
+	index += 2;
+	TempInt = Convert_StrToInt(pTempBuf, 2);
+	DebugPrintf("受理方标识码 = %d\n", TempInt);
+	index += TempInt;		//BCD码一个字节表示两位
+
+	//37 检索参考号
+	index += 24;
+
+	//41 受卡机终端标识码
+	index += 16;
+
+	//42 受卡方标识码
+	index += 30;
+	
+	//48 附加数据-私有
+	memset(pTempBuf, 0, sizeof(pTempBuf));
+	memcpy(pTempBuf, RecvData+index, 4);
+	DebugPrintf("pTempBuf = %s\n", pTempBuf);
+	index += 4;
+	TempInt = Convert_StrToInt(pTempBuf, 4);
+	DebugPrintf("受理方标识码 = %d\n", TempInt);
+	index += TempInt;		//BCD码一个字节表示两位
+
+	//49 交易货币代码
+	index += 6;
+
+	//60 自定义域	
+	memset(pTempBuf, 0, sizeof(pTempBuf));
+	memcpy(pTempBuf, RecvData+index, 14);
+	
+	DebugPrintf("pTempBuf = %s\n", pTempBuf);
+	index += 4;
+	TempInt = Convert_StrToInt(pTempBuf, 4);
+	DebugPrintf("自定义域	= %d\n", TempInt);
+	index += TempInt;
+	
+	return 0;
+}
+
+
+int SendMsgToServer_PBOC(char * HttpSendContent, const char * serverIPAddr, int param)
+{	
+	int sockfd, ret, i, h, ReturnFlag = 0;
+	socklen_t len;	
+	fd_set HttpSet;   	
+	char RecvBuf[RECV_BUF_SIZE_HAICHEEN];
+	char RecvCmpBuf[16];    
+	struct timeval  tv;	
+	struct sockaddr_in servaddr;		//创建socket连接    
+	
+	if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0 ) 	
+	{            
+		perror("socket error!\n");            
+		return -1;    
+	}    
+	
+	bzero(&servaddr, sizeof(servaddr));    
+	servaddr.sin_family = AF_INET;    
+	servaddr.sin_port = htons(PORT_HAICHEEN);
+	
+   if (inet_pton(AF_INET, serverIPAddr, &servaddr.sin_addr) <= 0 )	
+	{        
+		DebugPrintf("inet_pton error!\n");        
+		return -1;    
+	}    
+
+	if (connect(sockfd, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0)	
+	{        
+		DebugPrintf("connect server error!\n");        
+		return -1;    
+	}
+	
+	printf("send : %s\n",HttpSendContent);	    
+	ret = write(sockfd, HttpSendContent, param);	    
+	if (ret < 0) 
+	{        
+		DebugPrintf("write error, code %d infomation : %s\n",errno, strerror(errno));        
+		return -1;    
+	}else{        
+		DebugPrintf("write success %d\n", ret);    
+	}   
+	
+	FD_ZERO(&HttpSet);    
+	FD_SET(sockfd, &HttpSet);
+	
+	while(1)	
+	{        
+		sleep(2);        
+		tv.tv_sec= 2;        
+		tv.tv_usec= 0;        
+		h= 0;        
+		h= select(sockfd +1, &HttpSet, NULL, NULL, &tv);        
+		if (h == 0)		
+		{        	
+			DebugPrintf("continue time out\n");			
+			close(sockfd);			
+			return -1;        
+		}		
+		else if (h < 0)		
+		{            
+			close(sockfd);            
+			DebugPrintf("select error\n");            
+			return -1;        
+		}		
+		else if (h > 0)		
+		{            
+			memset(RecvBuf, 0, RECV_BUF_SIZE_HAICHEEN);
+			i= read(sockfd, RecvBuf, RECV_BUF_SIZE_HAICHEEN);
+			if (i==0)			
+			{                
+				close(sockfd);                
+				DebugPrintf("remote close\n");                
+				return -1;            
+			}            
+			printf("recive :%s\n", RecvBuf);			
+			if(G_SignInfo_PBOC)
+				ReturnFlag = HandleSignReplay(RecvBuf);
+			else if(G_Consume_PBOC)
+				ReturnFlag = HandelSendReplay(RecvBuf);
+			else if(G_BatchSett_PBOC)
+				ReturnFlag = HandelBatchSett(RecvBuf);
+			break;
+		}    
+	}    
+	close(sockfd);	
+	
+	return ReturnFlag;
+}
+
+
+int PbocDes_Demo(void)
+{
+
+	char dataIn[256];
+	char dataOut[256];
+	int datalen = 0, OutLen = 0, resault = 0;
+	
+	memset(dataIn, 0, sizeof(dataIn));
+	memset(dataOut, 0, sizeof(dataOut));
+	
+	memcpy(dataIn, "123456789abcdefghijk", strlen("123465789abcdefghijk"));
+	datalen = strlen("123465789abcdefghijk");
+
+	DebugPrintf("dataIn = %s\n", dataIn);
+	DebugPrintf("datalen  = %d\n", datalen );
+	
+	PbocEncrypt_DES(dataIn, datalen, dataOut, &OutLen, PbocKey.BaseKey);
+	DebugPrintf("OutLen = %d\n", OutLen);
+
+	memcpy(dataIn, dataOut, OutLen);
+	datalen = OutLen;
+	PbocDecrypt_DES(dataIn, datalen, dataOut, &OutLen, PbocKey.BaseKey);
+	DebugPrintf("dataOut = %s\n", dataOut);
+
+	return 0;
+}
+
+
+int ParserRecordToGetTag(void)
+{
+	int index = 0, datalen = 0;
+	char RecordBuf[256];
+
+	memset(RecordBuf, 0, sizeof(RecordBuf));
+
+	while(index < datalen)
+	{
+		/* 取出来的记录的最后面是有0x00的，这部分要过滤掉 */
+		if(RecordBuf[index] == 0x00)		
+		{
+			index++;
+			continue;
+		}
+		
+		if((RecordBuf[index] & 0x1F) == 0x1F)
+		{
+			datalen = RecordBuf[index+2];
+			switch(RecordBuf[index])
+			{
+				case 0x9f:
+				{
+					switch(RecordBuf[index+1])
+					{
+						case 0x26:
+							memcpy(TagData.Tag_9F26.buf, RecordBuf+index+3, datalen);
+							TagData.Tag_9F26.len = datalen;
+							index += datalen;
+							break;
+						case 0x27:
+							memcpy(TagData.Tag_9F27.buf, RecordBuf+index+3, datalen);
+							TagData.Tag_9F27.len = datalen;
+							index += datalen;							
+							break;
+						case 0x10:
+							memcpy(TagData.Tag_9F10.buf, RecordBuf+index+3, datalen);
+							TagData.Tag_9F10.len = datalen;
+							index += datalen;
+							break;
+						case 0x37:
+							memcpy(TagData.Tag_9F37.buf, RecordBuf+index+3, datalen);
+							TagData.Tag_9F37.len = datalen;
+							index += datalen;							
+							break;
+						case 0x36:
+							memcpy(TagData.Tag_9F36.buf, RecordBuf+index+3, datalen);
+							TagData.Tag_9F36.len = datalen;
+							index += datalen;
+							break;
+						case 0x02:
+							memcpy(TagData.Tag_9F02.buf, RecordBuf+index+3, datalen);
+							TagData.Tag_9F02.len = datalen;
+							index += datalen;							
+							break;
+						case 0x1A:
+							memcpy(TagData.Tag_9F1A.buf, RecordBuf+index+3, datalen);
+							TagData.Tag_9F1A.len = datalen;
+							index += datalen;
+							break;
+						case 0x03:
+							memcpy(TagData.Tag_9F03.buf, RecordBuf+index+3, datalen);
+							TagData.Tag_9F03.len = datalen;
+							index += datalen;							
+							break;
+						case 0x33:
+							memcpy(TagData.Tag_9F33.buf, RecordBuf+index+3, datalen);
+							TagData.Tag_9F33.len = datalen;
+							index += datalen;
+							break;
+						case 0x34:
+							memcpy(TagData.Tag_9F34.buf, RecordBuf+index+3, datalen);
+							TagData.Tag_9F34.len = datalen;
+							index += datalen;							
+							break;
+						case 0x35:
+							memcpy(TagData.Tag_9F35.buf, RecordBuf+index+3, datalen);
+							TagData.Tag_9F35.len = datalen;
+							index += datalen;
+							break;
+						case 0x1E:
+							memcpy(TagData.Tag_9F1E.buf, RecordBuf+index+3, datalen);
+							TagData.Tag_9F1E.len = datalen;
+							index += datalen;							
+							break;
+						case 0x09:
+							memcpy(TagData.Tag_9F09.buf, RecordBuf+index+3, datalen);
+							TagData.Tag_9F09.len = datalen;
+							index += datalen;
+							break;
+						case 0x41:
+							memcpy(TagData.Tag_9F41.buf, RecordBuf+index+3, datalen);
+							TagData.Tag_9F41.len = datalen;
+							index += datalen;							
+							break;
+						case 0x74:
+							memcpy(TagData.Tag_9F74.buf, RecordBuf+index+3, datalen);
+							TagData.Tag_9F74.len = datalen;
+							index += datalen;
+							break;
+						default:
+							printf("TERMAPP_EncodeTLV(): Unknown tag: %02X%02X\n", RecordBuf[index], RecordBuf[index + 1]);
+					}
+				}
+				break;
+				case 0x5f:
+				{
+					switch(RecordBuf[index+1])
+					{
+						case 0x24:
+							memcpy(TagData.Tag_5F24.buf, RecordBuf+index+3, datalen);
+							TagData.Tag_5F24.len = datalen;
+							index += datalen;
+							break;
+						case 0x2A:
+							memcpy(TagData.Tag_5F2A.buf, RecordBuf+index+3, datalen);
+							TagData.Tag_5F2A.len = datalen;
+							index += datalen;
+							break;
+						case 0x34:
+							memcpy(TagData.Tag_5F34.buf, RecordBuf+index+3, datalen);
+							TagData.Tag_5F34.len = datalen;
+							index += datalen;
+							break;
+						default:
+							printf("TERMAPP_EncodeTLV(): Unknown tag: %02X%02X\n", RecordBuf[index], RecordBuf[index + 1]);
+					}
+				}
+				break;
+			}
+
+			index += 3; /* 标签+长度标志 */
+		}
+		else
+		{
+			datalen = RecordBuf[index+1];			
+			switch(RecordBuf[index])
+			{
+				case 0x57:
+					memcpy(TagData.Tag_57.buf, RecordBuf+index+2, datalen);
+					TagData.Tag_57.len = datalen;
+					index += datalen;
+					break;
+				case 0x95:
+					memcpy(TagData.Tag_95.buf, RecordBuf+index+2, datalen);
+					TagData.Tag_95.len = datalen;
+					index += datalen;
+					break;
+				case 0x9A:
+					memcpy(TagData.Tag_9A.buf, RecordBuf+index+2, datalen);
+					TagData.Tag_9A.len = datalen;
+					index += datalen;
+					break;
+				case 0x9C:
+					memcpy(TagData.Tag_9C.buf, RecordBuf+index+2, datalen);
+					TagData.Tag_9C.len = datalen;
+					index += datalen;
+					break;
+				case 0x82:
+					memcpy(TagData.Tag_82.buf, RecordBuf+index+2, datalen);
+					TagData.Tag_82.len = datalen;
+					index += datalen;
+					break;
+				case 0x84:
+					memcpy(TagData.Tag_84.buf, RecordBuf+index+2, datalen);
+					TagData.Tag_84.len = datalen;
+					index += datalen;
+					break;
+				case 0x8A:
+					memcpy(TagData.Tag_8A.buf, RecordBuf+index+2, datalen);
+					TagData.Tag_8A.len = datalen;
+					index += datalen;
+					break;
+				case 0x5A:
+					memcpy(TagData.Tag_5A.buf, RecordBuf+index+2, datalen);
+					TagData.Tag_5A.len = datalen;
+					index += datalen;
+					break;
+				default:
+					printf("TERMAPP_EncodeTLV(): Unknown tag: %02X\n", RecordBuf[index]);
+			}
+			index += 2; 
+		}
+
+	}
+
+	return 0;
+}
+
+#if 0
+int ReadRecordAndBuildEMVData_XIAN(void)
+{
+	int Datafile;
+
+	/* 西安密码电子只刷银行卡，所以会有5条记录 */
+	if((SaveNumBc.i - CodeNum.i) >= 5)
+	{
+		pthread_mutex_lock(&m_datafile);
+		Datafile = open(OFF_LINE_CONSUM_FILE, O_SYNC|O_RDWR);
+		result = lseek(Datafile, Saddr, SEEK_SET);
+		result = read(Datafile, Senddata, 64);
+		memcpy(IDaddr.longbuf, Senddata+12, 4);
+		status = 0;
+		close(Datafile);
+		pthread_mutex_unlock(&m_datafile);
+	}
+}
+#endif
+
+int main_demo(int argc, char **argv)
+{
+	char TempBuf[32];
+	unsigned char data[512];
+	
+	memset(TempBuf, 0, sizeof(TempBuf));
+	memset(data, 0, sizeof(data));
+	
+	GetUploadMac(NULL, 0);
+	//PbocDes_Demo();		//单des加密
+
+	//BuildConsumeData();
+	
+	//HandelSendReplay(NULL);
+	//BuildSettleInfo();
+	return 0;
+
+	BuildSignInInfoByte(NULL);
+	BuildConsumeData(NULL);
+	BuildSettleInfo(NULL);
+	
+	HandleSignReplay(NULL);
+	HandelSendReplay(NULL);
+	HandelBatchSett(NULL);
+
+	return 0;
+}
+
+
+
+
