@@ -34,4 +34,4 @@ libcardlan_StandardBus_util.c：
 
 使用说明
 **************************************************************
-请确认已配置好NDK，使用build_cmd.bat即可自动完成so库编译。默认生成位置：./libs/armeabi-v7a
+请确认已配置好NDK，版本过高的NDK可能导致编译出错，测试时使用的版本为18.1.5063045。运行build_cmd.bat即可自动完成so库编译。默认生成位置：./libs/armeabi-v7a
